@@ -9,11 +9,13 @@ What this does:
     Claude returns a final text answer.
 
 What you need to fill in / install:
-  pip install anthropic ccxt pandas pandas-ta requests
+  pip install anthropic ccxt pandas pandas-ta requests feedparser
 
   Set environment variables:
     ANTHROPIC_API_KEY
-    CRYPTOPANIC_API_KEY   (optional, for news - free tier available)
+
+News comes from free public RSS feeds (CoinDesk, CoinTelegraph, Decrypt) —
+no API key or signup required.
 
 This is a CLI starter, not production code: no caching, no rate-limit
 handling, no persistent watchlist scheduler. Treat it as scaffolding.
@@ -22,6 +24,7 @@ handling, no persistent watchlist scheduler. Treat it as scaffolding.
 import os
 import json
 import requests
+import feedparser
 import ccxt
 import pandas as pd
 import pandas_ta as ta
@@ -86,28 +89,47 @@ def get_indicators(symbol: str, timeframe: str = "1h", limit: int = 200):
         return {"error": str(e)}
 
 
+NEWS_FEEDS = {
+    "coindesk": "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "cointelegraph": "https://cointelegraph.com/rss",
+    "decrypt": "https://decrypt.co/feed",
+}
+
+
 def get_news(query: str, limit: int = 10):
-    """Fetch recent news headlines from CryptoPanic."""
-    api_key = os.environ.get("CRYPTOPANIC_API_KEY")
-    if not api_key:
-        return {"error": "CRYPTOPANIC_API_KEY not set"}
-    try:
-        resp = requests.get(
-            "https://cryptopanic.com/api/v1/posts/",
-            params={"auth_token": api_key, "currencies": query, "public": "true"},
-            timeout=10,
-        )
-        resp.raise_for_status()
-        posts = resp.json().get("results", [])[:limit]
-        return {
-            "query": query,
-            "headlines": [
-                {"title": p["title"], "published_at": p["published_at"], "url": p["url"]}
-                for p in posts
-            ],
-        }
-    except Exception as e:
-        return {"error": str(e)}
+    """Fetch recent headlines matching `query` from free crypto RSS feeds."""
+    query_lower = query.lower()
+    matches = []
+    errors = {}
+
+    headers = {"User-Agent": "Mozilla/5.0 (compatible; crypto-research-bot/1.0)"}
+    for source, url in NEWS_FEEDS.items():
+        try:
+            resp = requests.get(url, headers=headers, timeout=10)
+            resp.raise_for_status()
+            feed = feedparser.parse(resp.content)
+            if feed.bozo and not feed.entries:
+                errors[source] = str(feed.bozo_exception)
+                continue
+            for entry in feed.entries:
+                title = entry.get("title", "")
+                if query_lower in title.lower():
+                    matches.append(
+                        {
+                            "title": title,
+                            "published_at": entry.get("published", ""),
+                            "url": entry.get("link", ""),
+                            "source": source,
+                        }
+                    )
+        except Exception as e:
+            errors[source] = str(e)
+
+    matches.sort(key=lambda m: m["published_at"], reverse=True)
+    result = {"query": query, "headlines": matches[:limit]}
+    if errors:
+        result["source_errors"] = errors
+    return result
 
 
 TOOL_FUNCTIONS = {
