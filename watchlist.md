@@ -17,8 +17,11 @@ either level gets hit.
 - Last updated: 2026-09-23
 
 ## SPX6900 (SPX)
-- Continuation: holds above the 30-day support (~$0.44) and clears
-  30-day resistance (~$0.57-$0.67) on volume → supports continuation
-- Breakdown: breaks below ~$0.44 (30-day low) on rising volume →
-  suggests the recent bounce (+7.3% in 24h as of 2026-09-23) is fading
-- Last updated: 2026-09-23
+- STATUS: Breakdown scenario triggered 2026-09-24 — broke below the prior
+  ~$0.44 support on a high-volume distribution/deleveraging event, -15.8%
+  in 24h to ~$0.43. No clear negative news catalyst; described as forced
+  long liquidation / crowded-trade unwind, with broader Solana memecoin
+  weakness cited.
+- Reclaim level: back above ~$0.44-0.46 would undercut the breakdown thesis
+- New downside level to watch: ~$0.40-0.41 (round number / recent low area)
+- Last updated: 2026-09-24
