@@ -11,24 +11,27 @@ Update these levels as price action develops. Flag in the daily update when
 either level gets hit.
 
 ## Backpack Exchange (BP)
-- STATUS: Continuation confirmed and then broke out further — Sept 26, 2026
-  rallied 32-43% in 24h to a fresh ATH ~$1.29-1.30, driven by RWA sector
-  rally, Backpack Card beta, expanded equity/ETF collateral, and a
-  short-liquidation cascade (shorts squeezed ~73x harder than longs).
-- New continuation level: holds above ~$0.97-1.00 (the old ATH area, now
-  acting as support) → confirms the breakout is sticking
-- New breakdown level: fast round-trip back below ~$0.80s on rising volume
-  → would suggest the Sept 26 move was a short-squeeze spike, not durable
-- Prior range (pre-ATH $0.80s / old ATH $0.98) is now stale reference, kept
-  only as the deeper breakdown level above
-- Last updated: 2026-09-26
+- STATUS: New ATH $1.56 on Sept 27, 2026, now pulling back on profit-taking
+  + broader market weakness (-19.1% off that ATH, to ~$1.24-1.27 as of
+  Sept 29). No negative catalyst — tokenized-stocks expansion plan (Sept 26)
+  still stands; this reads as technical exhaustion after a parabolic move.
+- Continuation level: holds above ~$0.97-1.00 (still well above this)
+- Near-term internal level: holding ~$1.20 keeps the higher range intact;
+  losing $1.20 opens a deeper pullback even though the broader continuation
+  level (~$0.97-1.00) would still be unbroken
+- Breakdown level: round-trip back below ~$0.80s on rising volume →
+  would suggest the whole late-Sept rally was unsustainable
+- Last updated: 2026-09-29
 
 ## SPX6900 (SPX)
-- STATUS: Breakdown scenario triggered 2026-09-24 — broke below the prior
-  ~$0.44 support on a high-volume distribution/deleveraging event, -15.8%
-  in 24h to ~$0.43. No clear negative news catalyst; described as forced
-  long liquidation / crowded-trade unwind, with broader Solana memecoin
-  weakness cited.
+- STATUS: Reclaim attempt (watched 9/24-9/28) has failed — price back down
+  to ~$0.415 as of 2026-09-29, -21% over 7 days, now retesting the
+  ~$0.40-0.41 downside level from the original 9/24 breakdown. Thin/no
+  fundamental news; drifting on speculative flow and influencer hype
+  rather than a specific catalyst.
 - Reclaim level: back above ~$0.44-0.46 would undercut the breakdown thesis
-- New downside level to watch: ~$0.40-0.41 (round number / recent low area)
-- Last updated: 2026-09-24
+  (this has now failed once)
+- Downside level being tested: ~$0.40-0.41 — a clean break below on rising
+  volume would open new lows; holding here would be the first sign of
+  stabilization
+- Last updated: 2026-09-29
