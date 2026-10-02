@@ -11,27 +11,25 @@ Update these levels as price action develops. Flag in the daily update when
 either level gets hit.
 
 ## Backpack Exchange (BP)
-- STATUS: New ATH $1.56 on Sept 27, 2026, now pulling back on profit-taking
-  + broader market weakness (-19.1% off that ATH, to ~$1.24-1.27 as of
-  Sept 29). No negative catalyst — tokenized-stocks expansion plan (Sept 26)
-  still stands; this reads as technical exhaustion after a parabolic move.
-- Continuation level: holds above ~$0.97-1.00 (still well above this)
-- Near-term internal level: holding ~$1.20 keeps the higher range intact;
-  losing $1.20 opens a deeper pullback even though the broader continuation
-  level (~$0.97-1.00) would still be unbroken
+- STATUS: Fresh ATH $1.65 on Oct 1, 2026 — driven by a genuine fundamental
+  catalyst: the US SEC granted Backpack an "Innovation Exemption" allowing
+  limited on-chain trading of tokenized US stocks (volume-capped, up to 5
+  years). This directly validates the tokenized-securities business model,
+  distinct from the earlier short-squeeze/momentum-driven rallies.
+- New continuation level: holds above ~$1.20-1.30 (recent consolidation
+  range below the new ATH) → confirms this high is sticking
+- Deeper continuation level (prior breakout zone): ~$0.97-1.00
 - Breakdown level: round-trip back below ~$0.80s on rising volume →
-  would suggest the whole late-Sept rally was unsustainable
-- Last updated: 2026-09-29
+  would suggest the broader Sept-Oct rally was unsustainable
+- Last updated: 2026-10-02
 
 ## SPX6900 (SPX)
-- STATUS: Reclaim attempt (watched 9/24-9/28) has failed — price back down
-  to ~$0.415 as of 2026-09-29, -21% over 7 days, now retesting the
-  ~$0.40-0.41 downside level from the original 9/24 breakdown. Thin/no
-  fundamental news; drifting on speculative flow and influencer hype
-  rather than a specific catalyst.
-- Reclaim level: back above ~$0.44-0.46 would undercut the breakdown thesis
-  (this has now failed once)
-- Downside level being tested: ~$0.40-0.41 — a clean break below on rising
-  volume would open new lows; holding here would be the first sign of
-  stabilization
-- Last updated: 2026-09-29
+- STATUS: Still unresolved — chopping in the $0.41-0.46 band for over a
+  week. One reclaim attempt already failed (late Sept); current bounce
+  attempts haven't cleanly broken above $0.46 or decisively below $0.40-0.41.
+  No fundamental catalyst either way; driven by influencer hype / broader
+  altcoin sentiment, not SPX-specific news.
+- Reclaim level: a clean hold above ~$0.46 → undercuts the breakdown thesis
+- Downside level: a clean break below ~$0.40-0.41 on rising volume → opens
+  new lows; so far neither has resolved decisively
+- Last updated: 2026-10-02
