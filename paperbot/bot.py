@@ -866,11 +866,12 @@ You receive prices, indicators, candles, open positions, risk state, per-section
 The desk is split into sections ("books"). Each setup you propose belongs to one, set in "mode". Only sections
 listed under "books" in the data are on. Each has its own rules:
 - "swing": days to weeks. Majors and quality alts. Clear structure, stop below a real swing low.
-- "scalp": minutes to hours (only if listed). Needs a first target at least 2% away. Closes automatically after
-  max_hold_hours.
+- "scalp": minutes to hours (only if listed). Use candles_15m_ohlc and ema20_15m. Needs a first target at least 2% away.
+  Closes automatically after max_hold_hours.
 - "meme": memes and speculative small caps (anything in the memes list, or a scanned coin with a pump-style chart).
   Small size, volatile. Needs a volume spike and a clear level to stop at. Closes automatically after max_hold_hours.
-- "hold": weeks to months (only if listed). Quality coins only, judged on the daily/4h trend, wide stops, patient.
+- "hold": weeks to months (only if listed). Quality coins only, judged on candles_1d_ohlc with ema20_1d / ema50_1d
+  and the 4h trend. Wide stops below real daily structure, patient entries, and only coins with a long-term case.
 Respect each section's stop range, min_rr, max_open and limits shown in the data.
 
 Rules:
@@ -994,6 +995,17 @@ class Brain:
                 "candles_1h_ohlc": [[c["o"], c["h"], c["l"], c["c"]] for c in h1[-nh1:]],
                 "candles_4h_ohlc": [[c["o"], c["h"], c["l"], c["c"]] for c in h4[-nh4:]],
             }
+            if core and self.cfg.books.get("scalp", {}).get("enabled"):      # scalps need the short view
+                m15 = fetch_candles(t, "15m", 40)
+                if m15:
+                    mkts[t]["candles_15m_ohlc"] = [[c["o"], c["h"], c["l"], c["c"]] for c in m15[-32:]]
+                    mkts[t]["ema20_15m"] = ema([c["c"] for c in m15], 20)
+            if core and self.cfg.books.get("hold", {}).get("enabled"):       # holds are judged on daily structure
+                d1 = fetch_candles(t, "1D", 60)
+                if d1:
+                    mkts[t]["candles_1d_ohlc"] = [[c["o"], c["h"], c["l"], c["c"]] for c in d1[-30:]]
+                    mkts[t]["ema20_1d"] = ema([c["c"] for c in d1], 20)
+                    mkts[t]["ema50_1d"] = ema([c["c"] for c in d1], 50)
         return {
             "now_utc": now_iso(), "watchlist": self.cfg.watchlist, "markets": mkts,
             "open_positions": [self._pos_view(p, prices) for p in self.eng.open_positions()],

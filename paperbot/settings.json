@@ -51,7 +51,16 @@
       "max_usd": 300
     },
     "hold": {
-      "enabled": false
+      "enabled": true,
+      "risk_pct": 0.005,
+      "stop": [
+        0.15,
+        0.3
+      ],
+      "min_rr": 2.0,
+      "max_open": 3,
+      "max_hold_hours": 0,
+      "alloc_pct": 0.4
     }
   },
   "memes": [
