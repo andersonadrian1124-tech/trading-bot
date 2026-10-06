@@ -90,6 +90,11 @@
       "ticker": "LIT",
       "address": "0x232CE3bd40fCd6f80f3d55A522d03f25Df784Ee2",
       "note": "Lighter, Ethereum"
+    },
+    {
+      "ticker": "ORBIO",
+      "address": "0xAa07A0e9209e16aC99708C3EC70159c6eF3128A3",
+      "note": "Orbio.so, Robinhood Chain"
     }
   ],
   "ntfy_topic": "adrian-paperbot-9657c872"
