@@ -12,9 +12,7 @@
     "INDEX",
     "UP",
     "ZEC",
-    "LIT",
     "AI",
-    "BP",
     "ONDO",
     "ZRO",
     "PUMP"
@@ -72,5 +70,12 @@
     "SHIB",
     "FARTCOIN",
     "PUMP"
+  ],
+  "dex_tokens": [
+    {
+      "ticker": "MOO",
+      "address": "0xd9db30bb0d2b8d2eae3826a1372117e058791e18",
+      "note": "Memory cow Moo, Robinhood Chain"
+    }
   ]
 }

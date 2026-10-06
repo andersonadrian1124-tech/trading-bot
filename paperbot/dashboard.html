@@ -207,6 +207,9 @@ ul{margin:6px 0 0;padding-left:18px;color:var(--dim)}
    <!-- SCANNER -->
    <section data-pane="scanner">
     <div class="ttl"><h2>Market scanner</h2><span class="h" id="scanSub"></span></div>
+    <div class="card"><h3>Find a coin (Coinbase + on-chain)</h3>
+     <form class="chatform" id="findForm" style="margin-top:0"><input id="findIn" type="search" placeholder="Name or ticker, e.g. memory cow, MOO, PEPE" maxlength="40" autocomplete="off" style="flex:1;background:rgba(7,21,24,.6);color:inherit;border:1px solid var(--line);border-radius:10px;padding:10px;font:inherit;font-size:14px"><button type="submit" id="findBtn">Search</button></form>
+     <div id="findOut" style="margin-top:10px"></div></div>
     <div class="card"><div class="wrap" id="scan"></div></div>
    </section>
 
@@ -408,6 +411,18 @@ $('pauseBtn').addEventListener('click',async()=>{const want=!(S.state&&S.state.p
   try{const r=await fetch(q('pause'),{method:'POST',headers:{'Content-Type':'application/json','X-PB':'1'},body:JSON.stringify({on:want})});if(!r.ok)throw new Error(r.status);
     addMsg('a',want?'New trades are paused. Open positions keep being managed (stops and targets still work).':'New trades are back on.');S.ov={v:want,until:Date.now()+20000};if(S.state)S.state.paused=want;$('paused').hidden=!want;renderChat(S.state||{paused:want})}
   catch(e){addMsg('a err','Could not change pause: '+e.message)}});
+
+/* ---------- coin search (Coinbase + on-chain) ---------- */
+$('findForm').addEventListener('submit',async e=>{e.preventDefault();const v=$('findIn').value.trim(),out=$('findOut');if(v.length<2)return;
+  out.innerHTML='<div class="dim">Searching…</div>';$('findBtn').disabled=true;
+  try{const r=await fetch(q('search?q='+encodeURIComponent(v)),{cache:'no-store'});const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||('error '+r.status));
+    const chg=c=>'<td class="mono '+cls(c)+'">'+(c==null?'—':(c>0?'+':'')+(c*100).toFixed(1)+'%')+'</td>';
+    const cb=(j.coinbase||[]).length?'<table><tr><th>Ticker</th><th>Name</th><th>Price</th><th>24h</th><th>24h volume</th></tr>'+j.coinbase.map(c=>'<tr><td><b>'+esc(c.ticker)+'</b></td><td>'+esc(c.name)+'</td><td class="mono">'+fp(c.price)+'</td>'+chg(c.change)+'<td class="mono">$'+Math.round(c.volume_usd).toLocaleString('en-US')+'</td></tr>').join('')+'</table><div class="dim" style="font-size:12px;margin:6px 0 12px">On Coinbase: tell Claude the ticker to add it.</div>':'<div class="dim" style="margin-bottom:12px">Nothing on Coinbase matches.</div>';
+    const dx=(j.dex||[]).length?'<table><tr><th>Symbol</th><th>Name</th><th>Chain</th><th>Price</th><th>24h</th><th>Pool liquidity</th><th>24h volume</th><th></th></tr>'+j.dex.map(c=>{const thin=c.liquidity_usd<50000;return '<tr><td><b>'+esc(c.ticker)+'</b></td><td>'+esc(c.name)+'</td><td>'+esc(c.chain)+'</td><td class="mono">'+fp(c.price)+'</td>'+chg(c.change)+'<td class="mono '+(thin?'down':'')+'">$'+Math.round(c.liquidity_usd).toLocaleString('en-US')+(thin?' thin':'')+'</td><td class="mono">$'+Math.round(c.volume_usd).toLocaleString('en-US')+'</td><td><button type="button" class="btn sm" data-copy="'+esc('Add '+c.ticker+' on '+c.chain+' to the bot, contract address '+c.address)+'">Copy to add</button></td></tr>'}).join('')+'</table><div class="dim" style="font-size:12px;margin-top:6px">On-chain coins: click "Copy to add" and paste it to Claude. The bot refuses pools under $50,000 and risks them at higher costs.</div>':'<div class="dim">Nothing on-chain matches.</div>';
+    out.innerHTML='<div class="lbl" style="margin-bottom:6px">Coinbase</div>'+cb+'<div class="lbl" style="margin-bottom:6px">On-chain</div>'+dx+((j.errors||[]).length?'<div class="down" style="margin-top:8px;font-size:12px">'+j.errors.map(esc).join(' · ')+'</div>':'')}
+  catch(err){out.innerHTML='<div class="down">Search failed: '+esc(err.message)+'</div>'}
+  $('findBtn').disabled=false});
+$('findOut').addEventListener('click',e=>{const b=e.target.closest('[data-copy]');if(!b)return;const t=b.dataset.copy;try{navigator.clipboard.writeText(t).then(()=>{b.textContent='Copied'},()=>{b.textContent='Select manually'})}catch(_){b.textContent='Select manually'}setTimeout(()=>{b.textContent='Copy to add'},2000)});
 
 /* ---------- scanner + activity ---------- */
 function renderScan(s){const sc=s.scan;

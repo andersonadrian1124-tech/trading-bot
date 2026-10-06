@@ -104,6 +104,13 @@ class Cfg:
                  "max_hold_hours": 0, "alloc_pct": 0.40},
     }
     max_chat_messages_per_day = 40   # dashboard chat box; each message is one Claude call
+    # on-chain (DEX) coins: tracked by contract address through DexScreener, paper-traded in the "meme" section.
+    # Each entry: {"ticker": "MOO", "address": "0x..."}. Costs are higher and thin pools are refused.
+    dex_tokens = []
+    dex_fee_pct = 0.003               # swap fee
+    dex_slippage_pct = 0.01           # price impact on a typical meme pool
+    dex_min_liquidity_usd = 50000     # no entries in pools thinner than this
+    dex_max_pct_of_liquidity = 0.02   # position can't exceed 2% of the pool
     review_days = 7.0              # how often Claude writes the performance review
     # remote settings: the bot re-reads this file from GitHub, so settings can be changed by chat
     settings_url = "https://raw.githubusercontent.com/andersonadrian1124-tech/trading-bot/main/paperbot/settings.json"
@@ -113,6 +120,14 @@ class Cfg:
 
     def __init__(self):
         self.books = copy.deepcopy(Cfg.books)   # every Cfg gets its own copy of the section rules
+        self.dex_tokens = []
+
+    def dex_map(self):
+        return {d["ticker"]: d for d in self.dex_tokens}
+
+    def core(self):
+        """Coins always watched: the Coinbase watchlist plus the on-chain tokens."""
+        return list(self.watchlist) + [d["ticker"] for d in self.dex_tokens if d["ticker"] not in self.watchlist]
 
 
 def load_cfg(path):
@@ -125,6 +140,8 @@ def load_cfg(path):
                     raise SystemExit(f"Unknown config key: {k}")
                 if k == "books":
                     apply_books(cfg, v)
+                elif k == "dex_tokens":
+                    cfg.dex_tokens = clean_dex_tokens(v)
                 else:
                     setattr(cfg, k, v)
     return cfg
@@ -137,6 +154,7 @@ REMOTE_KEYS = {
     "fee_pct", "slippage_pct", "claude_minutes", "max_claude_calls_per_day", "pending_expiry_hours", "scan_universe",
     "scan_min_volume_usd", "scan_top_gainers", "scan_top_losers", "scan_top_volume", "scan_meme_picks", "scanned_risk_mult",
     "stablecoins", "model", "news_urls", "paused", "books", "review_days", "max_chat_messages_per_day",
+    "dex_tokens", "dex_fee_pct", "dex_slippage_pct", "dex_min_liquidity_usd", "dex_max_pct_of_liquidity",
 }
 _remote_state = {"last": 0.0, "sha": None}
 
@@ -187,6 +205,23 @@ def apply_books(cfg, data):
     return changes
 
 
+def clean_dex_tokens(v):
+    if not isinstance(v, list) or len(v) > 25:
+        raise ValueError("expected a list of up to 25 tokens")
+    out, seen = [], set()
+    for d in v:
+        if not isinstance(d, dict):
+            raise ValueError("each token must be an object")
+        t, a = str(d.get("ticker", "")).strip().upper(), str(d.get("address", "")).strip()
+        if not re.fullmatch(r"[A-Z0-9]{2,12}", t) or not re.fullmatch(r"[A-Za-z0-9]{20,70}", a.replace("0x", "", 1) if a.startswith("0x") else a):
+            raise ValueError(f"bad ticker or address for {t or '?'}")
+        if t in seen:
+            raise ValueError(f"duplicate ticker {t}")
+        seen.add(t)
+        out.append({"ticker": t, "address": a, "note": str(d.get("note", ""))[:80]})
+    return out
+
+
 def apply_remote(cfg, data):
     """Validate and apply remote settings. Returns a list of change descriptions. Bad values are skipped."""
     changes = []
@@ -198,6 +233,16 @@ def apply_remote(cfg, data):
             continue
         if k == "books":
             changes += apply_books(cfg, v)
+            continue
+        if k == "dex_tokens":
+            try:
+                new = clean_dex_tokens(v)
+            except ValueError as e:
+                log.warning("remote settings: skipped dex_tokens (%s)", e)
+                continue
+            if new != cfg.dex_tokens:
+                changes.append(f"dex_tokens: {[d['ticker'] for d in cfg.dex_tokens]} -> {[d['ticker'] for d in new]}")
+                cfg.dex_tokens = new
             continue
         cur = getattr(cfg, k)
         try:
@@ -227,6 +272,7 @@ def apply_remote(cfg, data):
         if v != cur:
             setattr(cfg, k, v)
             changes.append(f"{k}: {cur} -> {v}")
+    set_dex(cfg)
     return changes
 
 
@@ -301,6 +347,8 @@ CREATE TABLE IF NOT EXISTS journal(
   auto_lesson TEXT, lesson TEXT);
 CREATE TABLE IF NOT EXISTS reviews(id INTEGER PRIMARY KEY, ts TEXT, payload TEXT);
 CREATE TABLE IF NOT EXISTS bench(id INTEGER PRIMARY KEY, ts TEXT, btc REAL, equity REAL);
+CREATE TABLE IF NOT EXISTS ticks(ticker TEXT, ts INTEGER, price REAL);
+CREATE INDEX IF NOT EXISTS ticks_t ON ticks(ticker, ts);
 """
 
 
@@ -385,9 +433,161 @@ def fetch_products():
     return out
 
 
+# ---- on-chain tokens (DexScreener, no key). Prices come from the best pool; charts are built from our own samples.
+DS = "https://api.dexscreener.com"
+_DEX = {"map": {}, "meta": {}, "db": None, "last_tick": {}, "pruned": 0.0}
+
+
+def set_dex(cfg):
+    _DEX["map"] = cfg.dex_map()
+    _DEX["db"] = cfg.db_path
+
+
+def _akey(a):
+    return a.lower() if a.startswith("0x") else a
+
+
+def ds_get(path, params=None, tries=2):
+    last = None
+    for i in range(tries):
+        try:
+            r = requests.get(DS + path, params=params or {}, timeout=10)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:
+            last = e
+            time.sleep(0.5 * (i + 1))
+    raise last
+
+
+def best_pairs(pairs):
+    """{(chain, base address): pair} keeping the deepest pool for each token."""
+    best = {}
+    for p in pairs or []:
+        base = ((p.get("baseToken") or {}).get("address") or "")
+        if not base:
+            continue
+        k = (p.get("chainId"), _akey(base))
+        if k not in best or _f((p.get("liquidity") or {}).get("usd")) > _f((best[k].get("liquidity") or {}).get("usd")):
+            best[k] = p
+    return best
+
+
+def fetch_dex_prices(tokens):
+    """tokens: {ticker: {'address': ...}} -> {ticker: {'p', 'ch'}}; also fills _DEX['meta'] with liquidity and volume."""
+    out, addrs = {}, [d["address"] for d in tokens.values()]
+    pairs = []
+    for i in range(0, len(addrs), 30):
+        try:
+            pairs += (ds_get("/latest/dex/tokens/" + ",".join(addrs[i:i + 30])) or {}).get("pairs") or []
+        except Exception as e:
+            log.debug("dex prices: %s", e)
+    by_addr = {}
+    for (_, a), p in best_pairs(pairs).items():
+        if a not in by_addr or _f((p.get("liquidity") or {}).get("usd")) > _f((by_addr[a].get("liquidity") or {}).get("usd")):
+            by_addr[a] = p
+    for t, d in tokens.items():
+        p = by_addr.get(_akey(d["address"]))
+        price = _f(p.get("priceUsd")) if p else 0.0
+        if price > 0:
+            out[t] = {"p": price, "ch": _f((p.get("priceChange") or {}).get("h24")) / 100.0}
+            _DEX["meta"][t] = {"liq": _f((p.get("liquidity") or {}).get("usd")), "vol": _f((p.get("volume") or {}).get("h24")),
+                               "chain": p.get("chainId"), "pair": p.get("pairAddress"), "dex": p.get("dexId")}
+    return out
+
+
+def record_ticks(prices, db_path=None):
+    """Keep a price sample about once a minute for each on-chain token; candles are built from these."""
+    path = db_path or _DEX["db"]
+    if not path or not _DEX["map"]:
+        return
+    now = int(time.time())
+    rows = [(t, now, prices[t]["p"]) for t in _DEX["map"] if t in prices and now - _DEX["last_tick"].get(t, 0) >= 55]
+    if not rows:
+        return
+    con = sqlite3.connect(path)
+    try:
+        con.executemany("INSERT INTO ticks(ticker,ts,price) VALUES(?,?,?)", rows)
+        if time.time() - _DEX["pruned"] > 3600:
+            con.execute("DELETE FROM ticks WHERE ts<?", (now - 60 * 86400,))
+            _DEX["pruned"] = time.time()
+        con.commit()
+    finally:
+        con.close()
+    for t, ts, _ in rows:
+        _DEX["last_tick"][t] = ts
+
+
+def dex_candles(ticker, secs, count):
+    path = _DEX["db"]
+    if not path:
+        return []
+    con = sqlite3.connect(path)
+    try:
+        rows = con.execute("SELECT ts,price FROM ticks WHERE ticker=? AND ts>=? ORDER BY ts",
+                           (ticker, int(time.time()) - secs * (count + 1))).fetchall()
+    finally:
+        con.close()
+    bars = {}
+    for ts, px in rows:
+        b = ts // secs * secs
+        if b not in bars:
+            bars[b] = {"t": b, "o": px, "h": px, "l": px, "c": px}
+        else:
+            x = bars[b]
+            x["h"], x["l"], x["c"] = max(x["h"], px), min(x["l"], px), px
+    return [bars[k] for k in sorted(bars)][-count:]
+
+
+_prod_cache = {"t": 0.0, "rows": []}
+
+
+def search_coins(q):
+    """Look a coin up on Coinbase and on-chain (DexScreener) at once."""
+    q = q.strip()[:40]
+    res = {"query": q, "coinbase": [], "dex": [], "errors": []}
+    if len(q) < 2:
+        return res
+    try:
+        if time.time() - _prod_cache["t"] > 600:
+            _prod_cache.update(t=time.time(), rows=fetch_products())
+        up, low = q.upper(), q.lower()
+        hits = []
+        for p in _prod_cache["rows"]:
+            if p.get("quote_currency_id") != "USD" or p.get("trading_disabled") or p.get("view_only"):
+                continue
+            sym, name = str(p.get("base_currency_id") or "").upper(), str(p.get("base_name") or "")
+            if sym == up or low in name.lower():
+                price, ch, vol = parse_product(p)
+                hits.append((0 if sym == up else 1, {"ticker": sym, "name": name, "price": price, "change": ch, "volume_usd": vol}))
+        res["coinbase"] = [h for _, h in sorted(hits, key=lambda x: (x[0], -x[1]["volume_usd"]))][:6]
+    except Exception as e:
+        res["errors"].append(f"Coinbase: {e}")
+    try:
+        pairs = (ds_get("/latest/dex/search", {"q": q}) or {}).get("pairs") or []
+        rows = []
+        for (chain, addr), p in best_pairs(pairs).items():
+            b = p.get("baseToken") or {}
+            rows.append({"ticker": str(b.get("symbol") or "").upper(), "name": b.get("name") or "", "chain": chain,
+                         "address": b.get("address") or addr, "price": _f(p.get("priceUsd")),
+                         "change": _f((p.get("priceChange") or {}).get("h24")) / 100.0,
+                         "liquidity_usd": _f((p.get("liquidity") or {}).get("usd")),
+                         "volume_usd": _f((p.get("volume") or {}).get("h24")), "dex": p.get("dexId")})
+        res["dex"] = sorted(rows, key=lambda r: -r["liquidity_usd"])[:8]
+    except Exception as e:
+        res["errors"].append(f"On-chain: {e}")
+    return res
+
+
 def fetch_prices(tickers):
     """{'BTC': {'p': 86000.0, 'ch': 0.012}, ...} for the given coins (USD pairs). Small, fast requests."""
     from concurrent.futures import ThreadPoolExecutor
+    dex = {t: _DEX["map"][t] for t in tickers if t in _DEX["map"]}
+    if dex:
+        tickers = [t for t in tickers if t not in dex]
+        dex_px = fetch_dex_prices(dex)
+    else:
+        dex_px = {}
 
     def one(t):
         try:
@@ -398,7 +598,7 @@ def fetch_prices(tickers):
             return t, None
 
     with ThreadPoolExecutor(max_workers=6) as ex:
-        return {t: v for t, v in ex.map(one, tickers) if v}
+        return {**{t: v for t, v in ex.map(one, tickers) if v}, **dex_px}
 
 
 def screen_universe(products, cfg):
@@ -429,7 +629,7 @@ def screen_universe(products, cfg):
     memeset = set(cfg.memes)
     for r in sorted((r for r in rows if r["ticker"] in memeset), key=lambda r: r["volume_usd"], reverse=True)[:cfg.scan_meme_picks]:
         picks.setdefault(r["ticker"], dict(r, why="meme list"))
-    cands = [v for t, v in picks.items() if t not in cfg.watchlist]
+    cands = [v for t, v in picks.items() if t not in cfg.core()]
     return cands, {"universe": universe, "liquid": len(rows)}
 
 
@@ -442,6 +642,8 @@ def parse_candles(res):
 
 def fetch_candles(ticker, timeframe, count=60):
     gran, secs = GRAN[timeframe]
+    if ticker in _DEX["map"]:
+        return dex_candles(ticker, secs, count)
     end = int(time.time())
     try:
         res = cb_get(f"/products/{ticker}-USD/candles",
@@ -520,6 +722,10 @@ class Engine:
             "alt_swings_open": sum(1 for p in opn if p["mode"] == "swing" and p["ticker"] not in c.majors),
         }
 
+    def costs(self, t):
+        c = self.cfg
+        return (c.dex_fee_pct, c.dex_slippage_pct) if t in c.dex_map() else (c.fee_pct, c.slippage_pct)
+
     # ---- the gatekeeper: every proposed trade passes through here
     def evaluate(self, s, price):
         """Returns (ok, reason, size_usd) for a proposed long."""
@@ -545,7 +751,7 @@ class Engine:
         if self.db.one("SELECT 1 FROM positions WHERE ticker=? AND status='open'", t):
             return False, "already holding it", 0
         e, st, t1, t2 = s["entry"], s["stop"], s["t1"], s.get("t2")
-        fill = min(e, price) * (1 + c.slippage_pct)
+        fill = min(e, price) * (1 + self.costs(t)[1])
         if not (st < fill < t1):
             return False, "levels not ordered (stop < entry < T1)", 0
         stop_pct = (fill - st) / fill
@@ -568,7 +774,7 @@ class Engine:
             risk_amt = rs["unit_risk"]
         else:
             risk_amt = rs["balance"] * bk["risk_pct"] * (0.5 if rs["half_risk"] else 1.0)
-        if t not in c.watchlist and mode != "meme":
+        if t not in c.core() and mode != "meme":
             risk_amt *= c.scanned_risk_mult   # unfamiliar, usually thinner coins
         room = rs["open_risk_cap"] - rs["open_risk"]
         if room < risk_amt * 0.25:
@@ -582,6 +788,11 @@ class Engine:
             usd = min(usd, bk.get("max_usd", c.meme_cap_usd))
         if mode == "hold":
             usd = min(usd, rs["balance"] * bk["alloc_pct"] - rs["hold_alloc"])
+        if t in c.dex_map():
+            liq = (_DEX["meta"].get(t) or {}).get("liq") or 0.0
+            if liq < c.dex_min_liquidity_usd:
+                return False, f"pool liquidity ${liq:,.0f} is under ${c.dex_min_liquidity_usd:,.0f}", 0
+            usd = min(usd, liq * c.dex_max_pct_of_liquidity)
         if usd < 20:
             return False, "position too small after caps", 0
         return True, "ok", usd
@@ -595,9 +806,9 @@ class Engine:
         ok, reason, usd = self.evaluate(s, price)
         if not ok:
             return None, reason
-        fill = min(s["entry"], price) * (1 + self.cfg.slippage_pct)
+        fill = min(s["entry"], price) * (1 + self.costs(s["ticker"])[1])
         qty = usd / fill
-        fee = usd * self.cfg.fee_pct
+        fee = usd * self.costs(s["ticker"])[0]
         pid = self.db.x(
             "INSERT INTO positions(ticker,mode,entry,qty,qty_open,stop,orig_stop,t1,t2,opened_at,realized,thesis,"
             "max_price,min_price) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -609,8 +820,9 @@ class Engine:
         return pid, "ok"
 
     def _sell(self, p, price, qty, kind, note):
-        fill = price * (1 - self.cfg.slippage_pct)
-        pnl = (fill - p["entry"]) * qty - fill * qty * self.cfg.fee_pct
+        fee_pct, slip = self.costs(p["ticker"])
+        fill = price * (1 - slip)
+        pnl = (fill - p["entry"]) * qty - fill * qty * fee_pct
         self.db.x("UPDATE positions SET realized=realized+?, qty_open=qty_open-? WHERE id=?", pnl, qty, p["id"])
         self._event(kind, p, fill, qty, pnl, note, p["id"])
         return pnl
@@ -801,8 +1013,8 @@ class Engine:
                 "unrealized": unreal, "risk": rs, "positions": positions, "pending": pend,
                 "events": events, "closed": closed, "journal": journal,
                 "watch": [{"ticker": t, "price": (prices.get(t) or {}).get("p"), "change": (prices.get(t) or {}).get("ch")}
-                          for t in self.cfg.watchlist],
-                "watch_missing": ([t for t in self.cfg.watchlist if t not in prices] if prices else []),
+                          for t in self.cfg.core()],
+                "watch_missing": ([t for t in self.cfg.core() if t not in prices] if prices else []),
                 "review": ({"ts": rv["ts"], **json.loads(rv["payload"])} if rv else None),
                 "benchmark": self.benchmark(), "books": self.cfg.books,
                 "scan": json.loads(self.db.get("scan", "null")),
@@ -878,6 +1090,8 @@ listed under "books" in the data are on. Each has its own rules:
 Respect each section's stop range, min_rr, max_open and limits shown in the data.
 
 Rules:
+- Markets with a "venue" of "on-chain DEX" are on-chain tokens priced from their deepest pool. Trade them only in the
+  "meme" section, mind pool_liquidity_usd (costs and slippage are higher), and note their chart history may be short.
 - Markets marked source "watchlist" are the desk's core coins. Markets marked source "scan" were picked by a
   screener from every liquid USD pair (top gainers, dips, highest volume). They are riskier. Use them only when the
   chart is clearly better than the watchlist, and usually in the "meme" section.
@@ -981,10 +1195,11 @@ class Brain:
     def build_context(self, prices, cands=()):
         mkts = {}
         why = {c["ticker"]: c for c in cands}
-        for t in list(self.cfg.watchlist) + list(why):
-            core = t in self.cfg.watchlist
+        dexm = self.cfg.dex_map()
+        for t in list(self.cfg.core()) + list(why):
+            core = t in self.cfg.core()
             h1, h4 = fetch_candles(t, "1h", 48), fetch_candles(t, "4h", 30)
-            if not h1 or t not in prices:
+            if t not in prices or (not h1 and t not in dexm):
                 continue
             closes = [c["c"] for c in h1]
             nh1, nh4 = (36, 20) if core else (24, 10)   # scanned coins get a lighter payload (cost)
@@ -994,11 +1209,19 @@ class Brain:
                 "price": prices[t]["p"], "change_24h_pct": round(prices[t]["ch"] * 100, 2),
                 "ema20_1h": ema(closes, 20), "atr14_1h": atr(h1),
                 "ema20_4h": ema([c["c"] for c in h4], 20) if h4 else None,
-                "high_48h": max(c["h"] for c in h1), "low_48h": min(c["l"] for c in h1),
+                "high_48h": max((c["h"] for c in h1), default=prices[t]["p"]), "low_48h": min((c["l"] for c in h1), default=prices[t]["p"]),
                 "candles_1h_ohlc": [[c["o"], c["h"], c["l"], c["c"]] for c in h1[-nh1:]],
                 "candles_4h_ohlc": [[c["o"], c["h"], c["l"], c["c"]] for c in h4[-nh4:]],
             }
-            if core and self.cfg.books.get("scalp", {}).get("enabled"):      # scalps need the short view
+            if t in dexm:                                                    # on-chain coin: extra facts and a short view
+                meta = _DEX["meta"].get(t) or {}
+                m15 = fetch_candles(t, "15m", 40)
+                mkts[t].update({"venue": "on-chain DEX (" + str(meta.get("chain")) + ")", "pool_liquidity_usd": round(meta.get("liq", 0)),
+                                "volume_24h_usd": round(meta.get("vol", 0)),
+                                "chart_note": "chart history is built from the bot's own price samples, so it may be short for a new coin",
+                                "candles_15m_ohlc": [[c["o"], c["h"], c["l"], c["c"]] for c in m15[-32:]],
+                                "ema20_15m": ema([c["c"] for c in m15], 20) if m15 else None})
+            elif core and self.cfg.books.get("scalp", {}).get("enabled"):    # scalps need the short view
                 m15 = fetch_candles(t, "15m", 40)
                 if m15:
                     mkts[t]["candles_15m_ohlc"] = [[c["o"], c["h"], c["l"], c["c"]] for c in m15[-32:]]
@@ -1122,10 +1345,10 @@ class Brain:
                 if typ == "open" and opened < 3:
                     t = str(a.get("ticker", "")).upper()
                     mode = a.get("mode")
-                    if t in c.memes and mode in ("swing", "scalp"):
+                    if (t in c.memes or t in c.dex_map()) and mode in ("swing", "scalp"):
                         mode = "meme"          # meme coins always trade in their own section
                     e, st, t1, t2 = (num(a.get(k)) for k in ("entry", "stop", "t1", "t2"))
-                    if t not in (set(c.watchlist) | self.allowed) or t not in prices or mode not in c.books or not (e and st and t1):
+                    if t not in (set(c.core()) | self.allowed) or t not in prices or mode not in c.books or not (e and st and t1):
                         out.append(f"skip malformed open: {a}")
                         continue
                     s = {"ticker": t, "mode": mode, "entry": e, "stop": st, "t1": t1, "t2": t2,
@@ -1203,7 +1426,7 @@ def chat_context(cfg):
         "latest_review": st.get("review"), "last_claude_read": st.get("last_decision"),
         "recent_events": keep(st.get("events"), ("ts", "kind", "ticker", "price", "pnl", "note"), 12),
         "scanner": {"candidates": keep((st.get("scan") or {}).get("candidates"), ("ticker", "change", "why"), 12)},
-        "watchlist": cfg.watchlist, "claude_calls_today": st.get("claude_calls_today"),
+        "watchlist": cfg.core(), "claude_calls_today": st.get("claude_calls_today"),
     }
 
 
@@ -1282,6 +1505,15 @@ def start_dashboard(cfg, chat=None):
                     hit = (time.time(), fetch_candles(t, tf, 120 if tf == "1D" else 80))
                     cache[(t, tf)] = hit
                 return self._send(200, json.dumps(hit[1]).encode(), "application/json")
+            if u.path == "/search":
+                qs = parse_qs(u.query).get("q", [""])[0]
+                if not re.fullmatch(r"[\w .\-]{2,40}", qs):
+                    return self._send(400, b'{"error":"bad query"}', "application/json")
+                hit = cache.get(("s", qs.lower()))
+                if not hit or time.time() - hit[0] > 30:
+                    hit = (time.time(), search_coins(qs))
+                    cache[("s", qs.lower())] = hit
+                return self._send(200, json.dumps(hit[1]).encode(), "application/json")
             if u.path == "/state.json":
                 try:
                     with open(cfg.state_path, "rb") as f:
@@ -1342,7 +1574,7 @@ def write_state(cfg, eng, prices):
 
 
 def needed(cfg, eng):
-    return sorted(set(cfg.watchlist) | {"BTC"} | {p["ticker"] for p in eng.open_positions()}
+    return sorted(set(cfg.core()) | {"BTC"} | {p["ticker"] for p in eng.open_positions()}
                   | {r["ticker"] for r in eng.db.q("SELECT ticker FROM pending WHERE status='waiting'")})
 
 
@@ -1350,6 +1582,7 @@ def run(cfg, once=False):
     db = DB(cfg.db_path)
     eng = Engine(cfg, db)
     brain = Brain(cfg, db, eng)
+    set_dex(cfg)
     running = {"on": True}
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: running.update(on=False))
@@ -1365,6 +1598,7 @@ def run(cfg, once=False):
         sync_remote(cfg, force=once)
         try:
             prices = fetch_prices(needed(cfg, eng))
+            record_ticks(prices)
             eng.tick(prices)
             eng.sample_bench(prices)
             fails, alerted = 0, False
@@ -1407,9 +1641,9 @@ def report(cfg):
 
 def selftest(cfg):
     print("1. Coinbase prices ...", end=" ")
-    px = fetch_prices(cfg.watchlist)
+    px = fetch_prices(cfg.core())
     print({k: v["p"] for k, v in px.items()} or "NO PRICES")
-    missing = [t for t in cfg.watchlist if t not in px]
+    missing = [t for t in cfg.core() if t not in px]
     if missing:
         print("   not found on Coinbase (will be skipped):", ", ".join(missing))
     print("2. Candles ...", end=" ")
@@ -1421,10 +1655,12 @@ def selftest(cfg):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("cmd", choices=["run", "once", "report", "selftest", "serve", "scan"])
+    ap.add_argument("cmd", choices=["run", "once", "report", "selftest", "serve", "scan", "find"])
+    ap.add_argument("query", nargs="?", default="")
     ap.add_argument("--config", default="config.json")
     a = ap.parse_args()
     cfg = load_cfg(a.config)
+    set_dex(cfg)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                         handlers=[logging.StreamHandler(sys.stdout),
                                   logging.handlers.RotatingFileHandler("bot.log", maxBytes=2_000_000, backupCount=3)])
@@ -1438,6 +1674,16 @@ def main():
               f"(24h volume over ${cfg.scan_min_volume_usd:,.0f}).")
         for c in cands:
             print(f"  {c['ticker']:<8} {c['price']:<12g} {c['change'] * 100:+6.1f}%  ${c['volume_usd']:>14,.0f}  {c['why']}")
+    elif a.cmd == "find":
+        r = search_coins(a.query)
+        print(f"Coinbase ({len(r['coinbase'])}):")
+        for c in r["coinbase"]:
+            print(f"  {c['ticker']:<8} {c['name'][:24]:<24} ${c['price']:<12g} {c['change'] * 100:+6.1f}%  vol ${c['volume_usd']:,.0f}")
+        print(f"On-chain ({len(r['dex'])}):")
+        for c in r["dex"]:
+            print(f"  {c['ticker']:<8} {c['name'][:24]:<24} {str(c['chain']):<10} ${c['price']:<12g} {c['change'] * 100:+6.1f}%  liq ${c['liquidity_usd']:,.0f}  {c['address']}")
+        for e in r["errors"]:
+            print("  error:", e)
     elif a.cmd == "serve":
         if start_dashboard(cfg, chat=make_chat(cfg)):
             while True:
