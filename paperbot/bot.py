@@ -111,6 +111,10 @@ class Cfg:
     dex_fee_pct = 0.003               # swap fee
     dex_slippage_pct = 0.01           # price impact on a typical meme pool
     dex_min_liquidity_usd = 50000     # no entries in pools thinner than this
+    scan_dex = True                   # also scan on-chain tokens (DexScreener boosted / new-profile lists)
+    scan_dex_picks = 6                # on-chain tokens shown to Claude each cycle
+    scan_dex_min_volume_usd = 100000  # 24h volume needed
+    scan_dex_min_age_hours = 24.0     # skip brand-new pools (rug risk)
     dex_max_pct_of_liquidity = 0.02   # position can't exceed 2% of the pool
     review_days = 7.0              # how often Claude writes the performance review
     # remote settings: the bot re-reads this file from GitHub, so settings can be changed by chat
@@ -122,9 +126,10 @@ class Cfg:
     def __init__(self):
         self.books = copy.deepcopy(Cfg.books)   # every Cfg gets its own copy of the section rules
         self.dex_tokens = []
+        self.dex_scan = {}   # on-chain tokens found by the scanner (runtime only, saved in the database)
 
     def dex_map(self):
-        return {d["ticker"]: d for d in self.dex_tokens}
+        return {**self.dex_scan, **{d["ticker"]: d for d in self.dex_tokens}}
 
     def core(self):
         """Coins always watched: the Coinbase watchlist plus the on-chain tokens."""
@@ -155,7 +160,7 @@ REMOTE_KEYS = {
     "fee_pct", "slippage_pct", "claude_minutes", "max_claude_calls_per_day", "pending_expiry_hours", "scan_universe",
     "scan_min_volume_usd", "scan_top_gainers", "scan_top_losers", "scan_top_volume", "scan_meme_picks", "scanned_risk_mult",
     "stablecoins", "model", "news_urls", "paused", "books", "review_days", "max_chat_messages_per_day",
-    "dex_tokens", "ntfy_topic", "dex_fee_pct", "dex_slippage_pct", "dex_min_liquidity_usd", "dex_max_pct_of_liquidity",
+    "dex_tokens", "ntfy_topic", "scan_dex", "scan_dex_picks", "scan_dex_min_volume_usd", "scan_dex_min_age_hours", "dex_fee_pct", "dex_slippage_pct", "dex_min_liquidity_usd", "dex_max_pct_of_liquidity",
 }
 _remote_state = {"last": 0.0, "sha": None}
 
@@ -482,6 +487,69 @@ def best_pairs(pairs):
         if k not in best or _f((p.get("liquidity") or {}).get("usd")) > _f((best[k].get("liquidity") or {}).get("usd")):
             best[k] = p
     return best
+
+
+def dex_discover(cfg, taken):
+    """Find on-chain tokens worth a look: the tokens DexScreener currently lists as boosted or newly profiled,
+    kept only if the pool is deep, busy and not brand new. `taken` = tickers that must not be reused."""
+    seen = {}
+    for path in ("/token-boosts/top/v1", "/token-boosts/latest/v1", "/token-profiles/latest/v1"):
+        try:
+            rows = ds_get(path)
+        except Exception as e:
+            log.debug("dex discover %s: %s", path, e)
+            continue
+        for r in rows if isinstance(rows, list) else []:
+            a, ch = str(r.get("tokenAddress") or ""), r.get("chainId")
+            if a and ch:
+                seen.setdefault((ch, _akey(a)), a)
+    addrs = list(seen.values())[:90]
+    pairs = []
+    for i in range(0, len(addrs), 30):
+        try:
+            pairs += (ds_get("/latest/dex/tokens/" + ",".join(addrs[i:i + 30])) or {}).get("pairs") or []
+        except Exception as e:
+            log.debug("dex discover prices: %s", e)
+    now_ms, best = time.time() * 1000, {}
+    for (chain, key), p in best_pairs(pairs).items():
+        b = p.get("baseToken") or {}
+        t, addr = str(b.get("symbol") or "").upper(), str(b.get("address") or "")
+        core_addr = addr[2:] if addr.startswith("0x") else addr
+        if not re.fullmatch(r"[A-Z0-9]{2,12}", t) or t in taken or t in cfg.stablecoins:
+            continue
+        if not re.fullmatch(r"[A-Za-z0-9]{20,70}", core_addr):
+            continue
+        price = _f(p.get("priceUsd"))
+        liq, vol = _f((p.get("liquidity") or {}).get("usd")), _f((p.get("volume") or {}).get("h24"))
+        created = _f(p.get("pairCreatedAt"))
+        age_h = (now_ms - created) / 3.6e6 if created else None
+        if price <= 0 or liq < cfg.dex_min_liquidity_usd or vol < cfg.scan_dex_min_volume_usd:
+            continue
+        if age_h is None or age_h < cfg.scan_dex_min_age_hours:
+            continue
+        pc = p.get("priceChange") or {}
+        row = {"ticker": t, "name": b.get("name") or "", "chain": chain, "address": addr, "price": price,
+               "change": _f(pc.get("h24")) / 100.0, "volume_usd": vol, "liquidity_usd": liq, "kind": "onchain",
+               "chg": {k: _f(pc.get(k)) for k in ("h1", "h6", "h24") if pc.get(k) is not None},
+               "buys_h1": ((p.get("txns") or {}).get("h1") or {}).get("buys"),
+               "sells_h1": ((p.get("txns") or {}).get("h1") or {}).get("sells"),
+               "age_hours": round(age_h), "pair": p.get("pairAddress"), "dex": p.get("dexId")}
+        if t not in best or liq > best[t]["liquidity_usd"]:
+            best[t] = row
+    rows = list(best.values())
+    n = max(0, int(cfg.scan_dex_picks))
+    picks = {}
+    for r in sorted(rows, key=lambda r: r["change"], reverse=True)[:(n + 1) // 2]:
+        picks.setdefault(r["ticker"], dict(r, why=f"on-chain ({r['chain']}) top 24h mover, pool ${r['liquidity_usd']:,.0f}"))
+    for r in sorted(rows, key=lambda r: r["volume_usd"], reverse=True):
+        if len(picks) >= n:
+            break
+        picks.setdefault(r["ticker"], dict(r, why=f"on-chain ({r['chain']}) busy pool, pool ${r['liquidity_usd']:,.0f}"))
+    for r in picks.values():
+        _DEX["meta"][r["ticker"]] = {"liq": r["liquidity_usd"], "vol": r["volume_usd"], "chain": r["chain"],
+                                     "pair": r["pair"], "dex": r["dex"], "chg": r["chg"],
+                                     "buys_h1": r["buys_h1"], "sells_h1": r["sells_h1"], "age_h": r["age_hours"]}
+    return list(picks.values())
 
 
 def fetch_dex_prices(tokens):
@@ -1283,6 +1351,9 @@ class Brain:
                 m15 = fetch_candles(t, "15m", 40)
                 mkts[t].update({"venue": "on-chain DEX (" + str(meta.get("chain")) + ")", "pool_liquidity_usd": round(meta.get("liq", 0)),
                                 "volume_24h_usd": round(meta.get("vol", 0)),
+                                **({"price_change_pct": meta["chg"]} if meta.get("chg") else {}),
+                                **({"txns_1h": {"buys": meta.get("buys_h1"), "sells": meta.get("sells_h1")}} if meta.get("buys_h1") is not None else {}),
+                                **({"pool_age_hours": meta["age_h"]} if meta.get("age_h") is not None else {}),
                                 "chart_note": "chart history is built from the bot's own price samples, so it may be short for a new coin",
                                 "candles_15m_ohlc": [[c["o"], c["h"], c["l"], c["c"]] for c in m15[-32:]],
                                 "ema20_15m": ema([c["c"] for c in m15], 20) if m15 else None})
@@ -1336,14 +1407,33 @@ class Brain:
             return
         k = "calls:" + datetime.now(ET).strftime("%Y-%m-%d")
         self.db.put(k, self.calls_today() + 1)
-        cands, stats = [], {}
+        cands, stats, products = [], {}, []
         if self.cfg.scan_universe:
             try:
-                cands, stats = screen_universe(fetch_products(), self.cfg)
+                products = fetch_products()
+                cands, stats = screen_universe(products, self.cfg)
                 prices = {**prices, **{c["ticker"]: {"p": c["price"], "ch": c["change"]} for c in cands}}
             except Exception as e:
                 log.warning("universe scan failed, using watchlist only: %s", e)
                 cands = []
+        if self.cfg.scan_dex:
+            try:
+                held = {p["ticker"] for p in self.eng.open_positions()} | \
+                       {r["ticker"] for r in self.db.q("SELECT ticker FROM pending WHERE status='waiting'")}
+                taken = ({str(p.get("base_currency_id") or "").upper() for p in products} | set(self.cfg.core())
+                         | {d["ticker"] for d in self.cfg.dex_tokens} | set(self.cfg.memes) | held)
+                dc = dex_discover(self.cfg, taken)
+                keep = {t: d for t, d in self.cfg.dex_scan.items() if t in held}
+                keep.update({c["ticker"]: {"ticker": c["ticker"], "address": c["address"],
+                                           "note": f"scanned, {c['chain']}"} for c in dc})
+                self.cfg.dex_scan = dict(list(keep.items())[:60])
+                self.db.put("dex_scan", json.dumps(self.cfg.dex_scan))
+                set_dex(self.cfg)
+                cands = list(cands) + dc
+                prices = {**prices, **{c["ticker"]: {"p": c["price"], "ch": c["change"]} for c in dc}}
+                stats = {**stats, "onchain_found": len(dc)}
+            except Exception as e:
+                log.warning("on-chain scan failed, skipping it this cycle: %s", e)
         self.allowed = {c["ticker"] for c in cands}
         self.db.put("scan", json.dumps({"ts": now_iso(), **stats, "candidates": cands}))
         ctx = self.build_context(prices, cands)
@@ -1647,6 +1737,10 @@ def run(cfg, once=False):
     db = DB(cfg.db_path)
     eng = Engine(cfg, db)
     brain = Brain(cfg, db, eng)
+    try:
+        cfg.dex_scan = json.loads(db.get("dex_scan", "{}")) or {}
+    except Exception:
+        cfg.dex_scan = {}
     set_dex(cfg)
     running = {"on": True}
     for sig in (signal.SIGINT, signal.SIGTERM):

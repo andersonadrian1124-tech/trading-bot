@@ -19,7 +19,7 @@
   "claude_minutes": 20,
   "max_claude_calls_per_day": 90,
   "scan_universe": true,
-  "scan_min_volume_usd": 3000000,
+  "scan_min_volume_usd": 1000000,
   "scalp_loss_cap": 5,
   "max_open_positions": 10,
   "open_risk_cap_pct": 0.06,
@@ -97,5 +97,10 @@
       "note": "Orbio.so, Robinhood Chain"
     }
   ],
-  "ntfy_topic": "adrian-paperbot-9657c872"
+  "ntfy_topic": "adrian-paperbot-9657c872",
+  "scan_top_gainers": 8,
+  "scan_top_losers": 4,
+  "scan_top_volume": 6,
+  "scan_dex": true,
+  "scan_dex_picks": 6
 }
