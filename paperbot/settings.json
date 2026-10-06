@@ -1,7 +1,7 @@
 {
   "_note": "Live settings for the paper bot. Claude edits this file when you ask in chat; the bot re-reads it every minute or so.",
   "paused": false,
-  "watchlist": ["BTC", "ETH", "SOL", "XRP", "HYPE", "LINK", "NEAR", "INDEX", "UP", "ORBIO"],
+  "watchlist": ["BTC", "ETH", "SOL", "XRP", "HYPE", "LINK", "NEAR", "INDEX", "UP"],
   "claude_minutes": 30,
   "scan_universe": true,
   "scan_min_volume_usd": 3000000
