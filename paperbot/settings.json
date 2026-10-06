@@ -4,5 +4,11 @@
   "watchlist": ["BTC", "ETH", "SOL", "XRP", "HYPE", "LINK", "NEAR", "INDEX", "UP"],
   "claude_minutes": 30,
   "scan_universe": true,
-  "scan_min_volume_usd": 3000000
+  "scan_min_volume_usd": 3000000,
+  "books": {
+    "swing": {"enabled": true, "max_open": 4},
+    "scalp": {"enabled": false},
+    "meme":  {"enabled": true, "risk_pct": 0.005, "stop": [0.03, 0.2], "min_rr": 1.5, "max_open": 3, "max_hold_hours": 48, "max_usd": 300},
+    "hold":  {"enabled": false}
+  }
 }
