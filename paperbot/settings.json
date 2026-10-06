@@ -4,5 +4,5 @@
   "watchlist": ["BTC", "ETH", "SOL", "XRP", "HYPE", "LINK", "NEAR", "INDEX", "UP", "ORBIO"],
   "claude_minutes": 30,
   "scan_universe": true,
-  "scan_min_volume_usd": 1000000
+  "scan_min_volume_usd": 3000000
 }
