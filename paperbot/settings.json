@@ -2,13 +2,18 @@
   "_note": "Live settings for the paper bot. Claude edits this file when you ask in chat; the bot re-reads it every minute or so.",
   "paused": false,
   "watchlist": ["BTC", "ETH", "SOL", "XRP", "HYPE", "LINK", "NEAR", "INDEX", "UP"],
-  "claude_minutes": 30,
+  "claude_minutes": 20,
+  "max_claude_calls_per_day": 90,
   "scan_universe": true,
   "scan_min_volume_usd": 3000000,
+  "scalp_loss_cap": 5,
+  "max_open_positions": 10,
+  "open_risk_cap_pct": 0.06,
+  "max_alt_swings": 3,
   "books": {
-    "swing": {"enabled": true, "max_open": 4},
-    "scalp": {"enabled": false},
-    "meme":  {"enabled": true, "risk_pct": 0.005, "stop": [0.03, 0.2], "min_rr": 1.5, "max_open": 3, "max_hold_hours": 48, "max_usd": 300},
+    "swing": {"enabled": true, "max_open": 5},
+    "scalp": {"enabled": true, "max_open": 4, "max_hold_hours": 24},
+    "meme":  {"enabled": true, "risk_pct": 0.005, "stop": [0.03, 0.2], "min_rr": 1.5, "max_open": 4, "max_hold_hours": 48, "max_usd": 300},
     "hold":  {"enabled": false}
   }
 }
