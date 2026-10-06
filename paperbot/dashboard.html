@@ -302,7 +302,7 @@ function renderPositions(s){
     return '<div class="card pos" data-pid="'+p.id+'"><div class="pos-top"><span class="tk">'+esc(p.ticker)+'<small>'+secName(p.mode)+(p.trimmed?' · half sold':'')+'</small></span><span class="pnl '+cls(p.unrealized)+'">'+sg(p.unrealized)+(pc==null?'':' '+(pc>0?'+':'')+pc.toFixed(1)+'%')+'</span></div>'+
      '<div class="meta"><span>IN '+fp(p.entry)+'</span><span>NOW '+fp(p.price)+'</span><span>SL '+fp(p.stop)+'</span><span>T1 '+fp(p.t1)+'</span><span>T2 '+fp(p.t2)+'</span><span>'+usd(p.entry*p.qty_open)+'</span></div>'+
      '<div class="lwc" data-pid="'+p.id+'" data-tk="'+esc(p.ticker)+'" data-big="'+(big?1:0)+'" style="height:'+chartH(big)+'px"></div>'+
-     '<div class="cbar"><span>'+esc(p.ticker)+'/USD · '+esc(S.tf)+' · Coinbase</span><span>T1/T2 marked</span></div>'+
+     '<div class="cbar"><span>'+esc(p.ticker)+'/USD · '+esc(S.tf)+' · Coinbase</span><span>BOUGHT / STOP / T1 / T2 marked</span></div>'+
      (p.thesis?'<div class="why">'+esc(p.thesis)+'</div>':'')+'</div>'}).join('');
   mountCharts()}
 $('posTabs').addEventListener('click',e=>{const b=e.target.closest('button[data-sel]');if(!b)return;S.sel=b.dataset.sel==='all'?'all':Number(b.dataset.sel);if(S.state)renderPositions(S.state)});
@@ -324,15 +324,20 @@ async function loadCandles(tk){const key=tk+'|'+S.tf;if(S.busy[key]||(S.candAt[k
   try{const r=await fetch(q('candles?ticker='+encodeURIComponent(tk)+'&tf='+encodeURIComponent(S.tf)),{cache:'no-store'});if(r.ok){S.cand[key]=await r.json();S.candAt[key]=Date.now();
     Object.keys(LC).forEach(pid=>{if(LC[pid].tk===tk)lwUpdate(pid)})}}catch(_){}finally{delete S.busy[key]}}
 function lwUpdate(pid){const e=LC[pid];if(!e||!S.state)return;const p=S.state.positions.find(x=>String(x.id)===String(pid));if(!p)return;
-  const t1=p.t1??null,t2=p.t2??null;e.ref.t=[t1,t2].filter(v=>v!=null);
-  const lsig=t1+'|'+t2;if(lsig!==e.lsig){e.lines.forEach(l=>{try{e.series.removePriceLine(l)}catch(_){}});e.lines=[];[['T1',t1],['T2',t2]].forEach(([n,v])=>{if(v!=null)e.lines.push(e.series.createPriceLine({price:v,color:'#34D399',lineWidth:1,lineStyle:0,axisLabelVisible:true,title:n}))});e.lsig=lsig}
+  const t1=p.t1??null,t2=p.t2??null,en=p.entry??null,sl=p.stop??null;e.ref.t=[t1,t2,en,sl].filter(v=>v!=null);
+  const lsig=[t1,t2,en,sl].join('|');if(lsig!==e.lsig){e.lines.forEach(l=>{try{e.series.removePriceLine(l)}catch(_){}});e.lines=[];
+    [['BOUGHT',en,'#E4F1EF',2],['STOP',sl,'#F87171',2],['T1',t1,'#34D399',0],['T2',t2,'#34D399',0]].forEach(([n,v,c,ls])=>{if(v!=null)e.lines.push(e.series.createPriceLine({price:v,color:c,lineWidth:1,lineStyle:ls,axisLabelVisible:true,title:n}))});e.lsig=lsig}
   const rows=S.cand[p.ticker+'|'+S.tf];if(!rows||rows.length<3)return;
   const bars=rows.map(r=>({time:r.t,open:r.o,high:r.h,low:r.l,close:r.c})).sort((a,b)=>a.time-b.time).filter((b,i,a)=>!i||b.time>a[i-1].time);
   const last=bars[bars.length-1];if(p.price){last.close=p.price;last.high=Math.max(last.high,p.price);last.low=Math.min(last.low,p.price)}
   const key=p.ticker+'|'+S.tf,dsig=key+'|'+bars.length+'|'+bars[0].time;
   if(dsig!==e.dsig){const first=!e.dsig||e.dsig.split('|').slice(0,2).join('|')!==key,pr=last.close,prec=pr>=1000?2:pr>=1?4:pr>=.01?6:8;
     e.series.applyOptions({priceFormat:{type:'price',precision:prec,minMove:Math.pow(10,-prec)}});e.series.setData(bars);if(first)e.chart.timeScale().fitContent();e.dsig=dsig}
-  else e.series.update(last)}
+  else e.series.update(last)
+  try{const t0=p.opened_at?Math.floor(Date.parse(p.opened_at)/1000):null;
+    if(t0&&bars[0].time<=t0){let bt=bars[0].time;for(const b of bars){if(b.time<=t0)bt=b.time;else break}
+      const msig=bt+'|'+en;if(msig!==e.msig){e.series.setMarkers([{time:bt,position:'belowBar',color:'#E4F1EF',shape:'arrowUp',text:'BUY'}]);e.msig=msig}}
+    else if(e.msig){e.series.setMarkers([]);e.msig=''}}catch(_){}}
 
 /* ---------- performance ---------- */
 function kpi(l,v,sub,c){return '<div class="card kpi"><h3>'+l+'</h3><div class="v '+(c||'')+'">'+v+'</div><div class="s">'+(sub||'')+'</div></div>'}
