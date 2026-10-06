@@ -1228,8 +1228,16 @@ Rules:
 - Markets marked source "watchlist" are the desk's core coins. Markets marked source "scan" were picked by a
   screener from every liquid USD pair (top gainers, dips, highest volume). They are riskier. Use them only when the
   chart is clearly better than the watchlist, and usually in the "meme" section.
-- "No trade" is a good answer. Propose at most 3 new setups, and only when the chart gives a clear
-  invalidation level (the stop) and enough reward to risk to T1.
+- Propose up to 5 new setups per check, each only when the chart gives a clear invalidation level (the stop) and
+  enough reward to risk to T1 for its section.
+- LEARNING MODE: this is paper money and the goal is data. The owner wants many real trades so the rules can be
+  judged and improved. So if a setup meets its section's minimum rules (clear stop, reward:risk at or above the
+  section minimum), take it even when it is not perfect. Do not wait for an ideal chart. Reserve "no trade" for
+  checks where nothing meets the minimums, and say what you looked at and why nothing qualified. Look across ALL
+  sections and ALL markets each check (watchlist, scanned Coinbase coins and on-chain tokens), not only the majors.
+- Start every thesis with a tag in brackets: grade A, B or C (A = clean, B = decent, C = marginal but meets the
+  minimums) and the pattern name, e.g. "[B | pullback to 4h EMA] ...". Other patterns: breakout, reclaim, range-low
+  bounce, dip-buy, momentum continuation, reversal. The owner uses these tags to see which grades and patterns pay.
 - Every setup needs: ticker (from the markets provided), mode, entry (a limit price at or below the current price,
   or the current price), stop, t1, optional t2, a one-sentence thesis.
 - Base levels on the candle data you are given. Do not invent news or prices.
@@ -1276,6 +1284,8 @@ Reply with ONLY JSON:
  "failing": ["<what is failing, with evidence>"],
  "suggestions": [{"change": "<one concrete rule or setting change, e.g. 'meme.stop to [0.04, 0.2]'>", "why": "<evidence>"}],
  "sample_note": "<how much to trust this, given the trade count>"}
+Theses start with a tag like "[B | pullback to 4h EMA]" (grade A/B/C and pattern). Break results down by grade and by
+pattern when there are enough trades, and say which grades or patterns to take more or less of.
 At most 3 suggestions. Prefer changing one thing at a time. Also judge whether the desk cut losers and flipped its view quickly enough, or held
 ideas out of stubbornness: note where an early exit would have saved money or where it exited too soon."""
 
@@ -1497,7 +1507,7 @@ class Brain:
         for a in actions[:8]:
             try:
                 typ = a.get("type")
-                if typ == "open" and opened < 3:
+                if typ == "open" and opened < 5:
                     t = str(a.get("ticker", "")).upper()
                     mode = a.get("mode")
                     if (t in c.memes or t in c.dex_map()) and mode in ("swing", "scalp"):

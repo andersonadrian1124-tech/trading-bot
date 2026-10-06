@@ -16,12 +16,12 @@
     "ZRO",
     "PUMP"
   ],
-  "claude_minutes": 20,
-  "max_claude_calls_per_day": 90,
+  "claude_minutes": 15,
+  "max_claude_calls_per_day": 130,
   "scan_universe": true,
   "scan_min_volume_usd": 1000000,
   "scalp_loss_cap": 5,
-  "max_open_positions": 10,
+  "max_open_positions": 14,
   "open_risk_cap_pct": 0.06,
   "max_alt_swings": 3,
   "books": {
@@ -31,7 +31,7 @@
     },
     "scalp": {
       "enabled": true,
-      "max_open": 4,
+      "max_open": 6,
       "max_hold_hours": 24
     },
     "meme": {
@@ -42,7 +42,7 @@
         0.2
       ],
       "min_rr": 1.5,
-      "max_open": 4,
+      "max_open": 6,
       "max_hold_hours": 48,
       "max_usd": 300
     },
