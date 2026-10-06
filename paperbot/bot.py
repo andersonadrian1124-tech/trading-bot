@@ -1074,8 +1074,11 @@ class Engine:
                 "balance": rs["balance"], "equity": rs["balance"] + unreal,
                 "unrealized": unreal, "risk": rs, "positions": positions, "pending": pend,
                 "events": events, "closed": closed, "journal": journal,
-                "watch": [{"ticker": t, "price": (prices.get(t) or {}).get("p"), "change": (prices.get(t) or {}).get("ch")}
+                "watch": [{"ticker": t, "price": (prices.get(t) or {}).get("p"), "change": (prices.get(t) or {}).get("ch"),
+                           "kind": "onchain" if t in self.cfg.dex_map() else "coinbase",
+                           "note": (self.cfg.dex_map().get(t) or {}).get("note", "")}
                           for t in self.cfg.core()],
+                "memes": list(self.cfg.memes),
                 "watch_missing": ([t for t in self.cfg.core() if t not in prices] if prices else []),
                 "review": ({"ts": rv["ts"], **json.loads(rv["payload"])} if rv else None),
                 "benchmark": self.benchmark(), "books": self.cfg.books,
