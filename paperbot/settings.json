@@ -85,6 +85,11 @@
       "ticker": "AI",
       "address": "0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18",
       "note": "Artificial Inu, Robinhood Chain"
+    },
+    {
+      "ticker": "LIT",
+      "address": "0x232CE3bd40fCd6f80f3d55A522d03f25Df784Ee2",
+      "note": "Lighter, Ethereum"
     }
   ]
 }
