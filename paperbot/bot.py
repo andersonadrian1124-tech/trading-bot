@@ -89,6 +89,7 @@ class Cfg:
     db_path = "paper.db"
     state_path = "state.json"
     notify_webhook = ""
+    ntfy_topic = ""   # phone push via the free ntfy app (set by chat through settings.json)
     # dashboard served by the bot itself
     dashboard_host = "127.0.0.1"   # use "0.0.0.0" to reach it from other devices (requires a token)
     dashboard_port = 8080          # 0 turns the dashboard off
@@ -154,7 +155,7 @@ REMOTE_KEYS = {
     "fee_pct", "slippage_pct", "claude_minutes", "max_claude_calls_per_day", "pending_expiry_hours", "scan_universe",
     "scan_min_volume_usd", "scan_top_gainers", "scan_top_losers", "scan_top_volume", "scan_meme_picks", "scanned_risk_mult",
     "stablecoins", "model", "news_urls", "paused", "books", "review_days", "max_chat_messages_per_day",
-    "dex_tokens", "dex_fee_pct", "dex_slippage_pct", "dex_min_liquidity_usd", "dex_max_pct_of_liquidity",
+    "dex_tokens", "ntfy_topic", "dex_fee_pct", "dex_slippage_pct", "dex_min_liquidity_usd", "dex_max_pct_of_liquidity",
 }
 _remote_state = {"last": 0.0, "sha": None}
 
@@ -246,7 +247,11 @@ def apply_remote(cfg, data):
             continue
         cur = getattr(cfg, k)
         try:
-            if isinstance(cur, bool):
+            if k == "ntfy_topic":
+                if not isinstance(v, str) or not re.fullmatch(r"[A-Za-z0-9_-]{8,64}", v.strip()):
+                    raise ValueError("topic must be 8-64 letters, numbers, - or _")
+                v = v.strip()
+            elif isinstance(cur, bool):
                 if not isinstance(v, bool):
                     raise ValueError("expected true/false")
             elif isinstance(cur, (int, float)):
@@ -317,6 +322,12 @@ def week_start_iso():
 
 def notify(cfg, msg):
     log.info("NOTIFY %s", msg)
+    if cfg.ntfy_topic:
+        try:
+            requests.post("https://ntfy.sh/" + cfg.ntfy_topic, data=msg.encode("utf-8"),
+                          headers={"Title": "Paper bot"}, timeout=8)
+        except Exception as e:
+            log.warning("ntfy failed: %s", e)
     if cfg.notify_webhook:
         try:
             requests.post(cfg.notify_webhook, json={"content": msg, "text": msg}, timeout=8)
