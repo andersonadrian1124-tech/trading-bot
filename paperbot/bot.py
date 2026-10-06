@@ -884,16 +884,34 @@ Rules:
 - Base levels on the candle data you are given. Do not invent news or prices.
 - A separate risk engine sizes, approves or rejects every trade. Do not try to size positions.
 - You may tighten (never loosen) the stop on an open position, or close one early with a reason.
+
+MINDSET (as important as the rules above):
+- You are not married to any idea, position or ticker. A thesis from yesterday may be invalid today. Tickers are just
+  vehicles: narratives, rotations and liquidity change, and capital should sit where the risk/reward is best now.
+- Every cycle, re-judge each open position and each waiting order as if you were seeing it for the first time: would
+  you open this today, at this price, with this stop? If the answer is no, close it, tighten the stop, or cancel the
+  order. Use "age_hours", "pnl_pct" and the original "thesis" you are given to judge whether it still holds.
+- Being wrong is normal. Admit it early and cut it small; do not wait for the stop out of hope. Never average down.
+  Closing a broken idea at a small loss, or flipping from bullish to neutral when new information arrives, is good
+  process, not inconsistency. Say plainly in your summary when you changed your mind and why.
+- Being late to a trend is fine if the setup is clean right now (clear stop, enough reward to risk). Do not skip a
+  good setup because "it already moved", and do not chase one that has no clean invalidation either.
+- Hold every ticker, majors and memes alike, to the same standard. Only what is made and kept matters, and being paid
+  for the risk taken. Never defend a position out of ego or familiarity.
+- The risk engine and its limits still apply to everything above. Fluid means quick to correct, not reckless.
+
 - LEARN: "recent_lessons" and "book_stats" show how each section has done. Lean toward what has worked and away
   from patterns that keep failing. "to_review" lists finished trades with no lesson yet: for each, write one
-  specific sentence (what the trade showed, what to do differently), max 30 words.
+  specific sentence (what the trade showed, what to do differently, and whether you cut or flipped quickly enough),
+  max 30 words.
 
 Reply with ONLY a JSON object, no markdown:
 {"summary": "<2 sentences on the market>",
  "actions": [
    {"type":"open","ticker":"SOL","mode":"swing","entry":0,"stop":0,"t1":0,"t2":0,"thesis":"..."},
    {"type":"adjust_stop","position_id":1,"new_stop":0,"why":"..."},
-   {"type":"close","position_id":1,"why":"..."}
+   {"type":"close","position_id":1,"why":"..."},
+   {"type":"cancel_order","ticker":"HYPE","why":"setup no longer valid"}
  ],
  "lessons": [{"pos_id": 1, "lesson": "..."}]}"""
 
@@ -907,7 +925,8 @@ Reply with ONLY JSON:
  "failing": ["<what is failing, with evidence>"],
  "suggestions": [{"change": "<one concrete rule or setting change, e.g. 'meme.stop to [0.04, 0.2]'>", "why": "<evidence>"}],
  "sample_note": "<how much to trust this, given the trade count>"}
-At most 3 suggestions. Prefer changing one thing at a time."""
+At most 3 suggestions. Prefer changing one thing at a time. Also judge whether the desk cut losers and flipped its view quickly enough, or held
+ideas out of stubbornness: note where an early exit would have saved money or where it exited too soon."""
 
 
 def extract_json(text):
@@ -940,6 +959,21 @@ class Brain:
     def calls_today(self):
         return int(self.db.get("calls:" + datetime.now(ET).strftime("%Y-%m-%d"), "0"))
 
+    @staticmethod
+    def _age_hours(iso):
+        try:
+            return round((datetime.now(timezone.utc) - datetime.fromisoformat(iso)).total_seconds() / 3600, 1)
+        except Exception:
+            return None
+
+    def _pos_view(self, p, prices):
+        px = (prices.get(p["ticker"]) or {}).get("p")
+        v = {k: p[k] for k in ("id", "ticker", "mode", "entry", "stop", "t1", "t2", "trimmed", "thesis")}
+        v["now_price"] = px
+        v["pnl_pct"] = round((px / p["entry"] - 1) * 100, 2) if px and p["entry"] else None
+        v["age_hours"] = self._age_hours(p["opened_at"])
+        return v
+
     def build_context(self, prices, cands=()):
         mkts = {}
         why = {c["ticker"]: c for c in cands}
@@ -962,9 +996,9 @@ class Brain:
             }
         return {
             "now_utc": now_iso(), "watchlist": self.cfg.watchlist, "markets": mkts,
-            "open_positions": [{k: p[k] for k in ("id", "ticker", "mode", "entry", "stop", "t1", "t2", "trimmed")}
-                               for p in self.eng.open_positions()],
-            "pending_orders": [dict(r) for r in self.db.q("SELECT ticker,mode,limit_price,stop,t1 FROM pending WHERE status='waiting'")],
+            "open_positions": [self._pos_view(p, prices) for p in self.eng.open_positions()],
+            "pending_orders": [{**dict(r), "age_hours": self._age_hours(r["created_at"]), "now_price": (prices.get(r["ticker"]) or {}).get("p")}
+                               for r in self.db.q("SELECT ticker,mode,limit_price,stop,t1,thesis,created_at FROM pending WHERE status='waiting'")],
             "risk": {k: (round(v, 2) if isinstance(v, float) else v) for k, v in self.eng.risk_state().items()},
             "books": {n: b for n, b in self.cfg.books.items() if b.get("enabled")},
             "memes_list": self.cfg.memes,
@@ -1104,6 +1138,15 @@ class Brain:
                         out.append(f"{p['ticker']} stop raised to {ns:g}")
                     else:
                         out.append("stop change refused (can only tighten, below price)")
+                elif typ == "cancel_order":
+                    t = str(a.get("ticker", "")).upper()
+                    n = self.db.one("SELECT COUNT(*) n FROM pending WHERE ticker=? AND status='waiting'", t)["n"]
+                    if n:
+                        self.db.x("UPDATE pending SET status='cancelled', note=? WHERE ticker=? AND status='waiting'",
+                                  "cancelled by analyst: " + str(a.get("why", ""))[:80], t)
+                        out.append(f"{t} waiting order cancelled")
+                    else:
+                        out.append(f"no waiting order for {t}")
                 elif typ == "close":
                     p = eng.db.one("SELECT * FROM positions WHERE id=? AND status='open'", int(a.get("position_id", -1)))
                     px = prices.get(p["ticker"], {}).get("p") if p else None
