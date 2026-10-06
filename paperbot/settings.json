@@ -12,7 +12,6 @@
     "INDEX",
     "UP",
     "ZEC",
-    "AI",
     "ONDO",
     "ZRO",
     "PUMP"
@@ -76,6 +75,11 @@
       "ticker": "MOO",
       "address": "0xd9db30bb0d2b8d2eae3826a1372117e058791e18",
       "note": "Memory cow Moo, Robinhood Chain"
+    },
+    {
+      "ticker": "BP",
+      "address": "BPxxfRCXkUVhig4HS1Lh7kZqV6SPJhzfEk4x6fVBjPCy",
+      "note": "Backpack, Solana"
     }
   ]
 }
