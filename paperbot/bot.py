@@ -553,10 +553,57 @@ def dex_candles(ticker, secs, count):
 _prod_cache = {"t": 0.0, "rows": []}
 
 
+_CG = {"t": 0.0, "detail": {}}
+
+
+def cg_get(path, params=None):
+    """CoinGecko public API (free tier is rate limited, so callers keep requests few)."""
+    wait = 2.5 - (time.time() - _CG["t"])
+    if wait > 0:
+        time.sleep(wait)
+    _CG["t"] = time.time()
+    headers = {"Accept": "application/json"}
+    key = os.environ.get("COINGECKO_API_KEY")
+    if key:
+        headers["x-cg-demo-api-key"] = key
+    r = requests.get("https://api.coingecko.com/api/v3" + path, params=params, headers=headers, timeout=12)
+    if r.status_code == 429:
+        raise RuntimeError("rate limited, try again in a minute")
+    r.raise_for_status()
+    return r.json()
+
+
+def cg_search(q, limit=6):
+    coins = (cg_get("/search", {"query": q}) or {}).get("coins") or []
+    coins = [c for c in coins if c.get("id")][:limit]
+    if not coins:
+        return []
+    ids = ",".join(c["id"] for c in coins)
+    px = cg_get("/simple/price", {"ids": ids, "vs_currencies": "usd", "include_24hr_change": "true"}) or {}
+    rows = []
+    for i, c in enumerate(coins):
+        cid = c["id"]
+        p = px.get(cid) or {}
+        chains = _CG["detail"].get(cid)
+        if chains is None and i < 3:     # contract addresses for the top few only, to stay inside rate limits
+            try:
+                d = cg_get(f"/coins/{cid}", {"localization": "false", "tickers": "false", "market_data": "false",
+                                             "community_data": "false", "developer_data": "false", "sparkline": "false"})
+                chains = [{"chain": k, "address": v} for k, v in (d.get("platforms") or {}).items() if k and v][:4]
+                _CG["detail"][cid] = chains
+            except Exception as e:
+                log.debug("coingecko detail %s: %s", cid, e)
+                chains = []
+        rows.append({"id": cid, "ticker": str(c.get("symbol") or "").upper(), "name": c.get("name") or "",
+                     "rank": c.get("market_cap_rank"), "price": _f(p.get("usd")),
+                     "change": _f(p.get("usd_24h_change")) / 100.0, "chains": chains or []})
+    return rows
+
+
 def search_coins(q):
     """Look a coin up on Coinbase and on-chain (DexScreener) at once."""
     q = q.strip()[:40]
-    res = {"query": q, "coinbase": [], "dex": [], "errors": []}
+    res = {"query": q, "coinbase": [], "dex": [], "coingecko": [], "errors": []}
     if len(q) < 2:
         return res
     try:
@@ -587,6 +634,10 @@ def search_coins(q):
         res["dex"] = sorted(rows, key=lambda r: -r["liquidity_usd"])[:8]
     except Exception as e:
         res["errors"].append(f"On-chain: {e}")
+    try:
+        res["coingecko"] = cg_search(q)
+    except Exception as e:
+        res["errors"].append(f"CoinGecko: {e}")
     return res
 
 
