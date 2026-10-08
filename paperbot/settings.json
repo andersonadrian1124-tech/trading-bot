@@ -16,8 +16,8 @@
     "ZRO",
     "PUMP"
   ],
-  "claude_minutes": 15,
-  "max_claude_calls_per_day": 130,
+  "claude_minutes": 60,
+  "max_claude_calls_per_day": 26,
   "scan_universe": true,
   "scan_min_volume_usd": 1000000,
   "scalp_loss_cap": 5,
@@ -98,15 +98,17 @@
     }
   ],
   "ntfy_topic": "adrian-paperbot-9657c872",
-  "scan_top_gainers": 8,
-  "scan_top_losers": 4,
-  "scan_top_volume": 6,
+  "scan_top_gainers": 3,
+  "scan_top_losers": 2,
+  "scan_top_volume": 3,
   "scan_dex": true,
-  "scan_dex_picks": 6,
+  "scan_dex_picks": 3,
   "news_feeds": [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
     "https://cointelegraph.com/rss",
     "https://decrypt.co/feed",
     "https://www.theblock.co/rss.xml"
-  ]
+  ],
+  "scan_meme_picks": 2,
+  "max_chat_messages_per_day": 15
 }
