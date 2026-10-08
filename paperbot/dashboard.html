@@ -159,6 +159,7 @@ ul{margin:6px 0 0;padding-left:18px;color:var(--dim)}
     </div>
     <div class="card"><h3>Open positions</h3><div class="wrap" id="ovPos"></div></div>
     <div class="card"><h3>Watchlist prices</h3><div id="watch"></div></div>
+    <div class="card"><h3>Latest headlines the bot reads</h3><div id="newsBox"></div></div>
     <div class="grid">
      <div class="card"><h3>Waiting limit orders</h3><div id="pend"></div></div>
      <div class="card"><h3>Claude's last read</h3><div id="claude"></div></div>
@@ -283,6 +284,8 @@ function renderOverview(s){
     return '<tr><td><b>'+esc(p.ticker)+'</b>'+(p.trimmed?' <span class="dim">(half sold)</span>':'')+'</td><td>'+secName(p.mode)+'</td><td class="mono">'+fp(p.entry)+'</td><td class="mono">'+fp(p.price)+'</td><td class="mono '+cls(p.unrealized)+'">'+sg(p.unrealized)+(pc==null?'':' ('+(pc>0?'+':'')+pc.toFixed(1)+'%)')+'</td><td class="mono down">'+fp(p.stop)+'</td><td class="mono up">'+fp(p.t1)+'</td><td class="mono up">'+fp(p.t2)+'</td></tr>'}).join('')+'</table>':'<div class="empty">No open positions.</div>';
   $('pend').innerHTML=s.pending.length?s.pending.map(o=>'<div class="row"><span><b>'+esc(o.ticker)+'</b> '+secName(o.mode)+'</span><span class="mono">buy ≤ '+fp(o.limit_price)+' · stop '+fp(o.stop)+'</span></div>').join(''):'<div class="empty">None waiting.</div>';
   const wl=s.watch||[],miss=new Set(s.watch_missing||[]);
+  {const nb=$('newsBox'),ns=s.news||[];nb.innerHTML=ns.length?ns.map(n=>{const age=n.ts?Math.max(0,(Date.now()/1000-n.ts)/3600):null,a=age==null?'':(age<1?Math.round(age*60)+'m':age<48?Math.round(age)+'h':Math.round(age/24)+'d');
+    const t=esc(n.title);return '<div class="row"><span>'+(/^https?:\/\//.test(n.link||'')?'<a href="'+esc(n.link)+'" target="_blank" rel="noopener noreferrer">'+t+'</a>':t)+'</span><span class="dim mono" style="white-space:nowrap">'+esc(n.source||'')+(a?' · '+a:'')+'</span></div>'}).join(''):'<div class="empty">No headlines yet. They load with the next Claude check.</div>'}
   $('watch').innerHTML=wl.length?'<div style="display:flex;flex-wrap:wrap;gap:8px">'+wl.map(w=>{const m=miss.has(w.ticker)||w.price==null;return '<div class="chip" style="'+(m?'border-color:#F87171':'')+'"><b>'+esc(w.ticker)+'</b> '+(m?'<span class="down">not found on Coinbase</span>':'<span class="mono">'+fp(w.price)+'</span> <span class="mono '+cls(w.change)+'">'+(w.change==null?'':(w.change>0?'+':'')+(w.change*100).toFixed(1)+'%')+'</span>')+'</div>'}).join('')+'</div>'+(miss.size?'<div class="dim" style="margin-top:8px;font-size:12px">Red coins return no price from Coinbase, so the bot skips them. Check the ticker, or tell Claude to remove them.</div>':''):'<div class="empty">Waiting for the first price check.</div>';
   const d=s.last_decision;
   $('claude').innerHTML=d?'<div class="dim">'+ago(d.ts)+'</div><div style="margin:6px 0">'+esc(d.summary||'')+'</div>'+((d.results||[]).length?'<ul>'+d.results.map(x=>'<li>'+esc(x)+'</li>').join('')+'</ul>':'<div class="dim">No trades proposed.</div>'):'<div class="empty">No Claude cycle yet.</div>'}

@@ -102,5 +102,11 @@
   "scan_top_losers": 4,
   "scan_top_volume": 6,
   "scan_dex": true,
-  "scan_dex_picks": 6
+  "scan_dex_picks": 6,
+  "news_feeds": [
+    "https://www.coindesk.com/arc/outboundfeeds/rss/",
+    "https://cointelegraph.com/rss",
+    "https://decrypt.co/feed",
+    "https://www.theblock.co/rss.xml"
+  ]
 }
