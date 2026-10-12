@@ -280,8 +280,8 @@ function renderOverview(s){
   $('meters').innerHTML=meter('Open risk',r.open_risk,r.open_risk_cap,usd)+meter('Loss today',r.day_loss,r.day_cap,usd)+meter('Loss this week',r.week_loss,r.week_cap,usd)+meter('Drawdown',r.drawdown,.10,v=>(v*100).toFixed(1)+'%');
   $('riskflags').innerHTML='Risk per trade '+usd(r.unit_risk)+(r.half_risk?' <span class="warn">(halved after drawdown)</span>':'')+(s.books&&s.books.scalp&&s.books.scalp.enabled?' · scalp losses today '+r.scalp_losses_today+'/2':'');
   $('ovPos').innerHTML=s.positions.length?'<table><tr><th>Ticker</th><th>Type</th><th>Entry</th><th>Now</th><th>P&amp;L</th><th>Stop</th><th>T1</th><th>T2</th></tr>'+s.positions.map(p=>{
-    const pc=p.price&&p.entry?(p.price/p.entry-1)*100:null;
-    return '<tr><td><b>'+esc(p.ticker)+'</b>'+(p.trimmed?' <span class="dim">(half sold)</span>':'')+'</td><td>'+secName(p.mode)+'</td><td class="mono">'+fp(p.entry)+'</td><td class="mono">'+fp(p.price)+'</td><td class="mono '+cls(p.unrealized)+'">'+sg(p.unrealized)+(pc==null?'':' ('+(pc>0?'+':'')+pc.toFixed(1)+'%)')+'</td><td class="mono down">'+fp(p.stop)+'</td><td class="mono up">'+fp(p.t1)+'</td><td class="mono up">'+fp(p.t2)+'</td></tr>'}).join('')+'</table>':'<div class="empty">No open positions.</div>';
+    const pc=p.price&&p.entry?(p.price/p.entry-1)*100*(p.side==='short'?-1:1):null;
+    return '<tr><td><b>'+esc(p.ticker)+'</b>'+(p.trimmed?' <span class="dim">(stop at entry)</span>':'')+'</td><td>'+secName(p.mode)+'</td><td class="mono">'+fp(p.entry)+'</td><td class="mono">'+fp(p.price)+'</td><td class="mono '+cls(p.unrealized)+'">'+sg(p.unrealized)+(pc==null?'':' ('+(pc>0?'+':'')+pc.toFixed(1)+'%)')+'</td><td class="mono down">'+fp(p.stop)+'</td><td class="mono up">'+fp(p.t1)+'</td><td class="mono up">'+fp(p.t2)+'</td></tr>'}).join('')+'</table>':'<div class="empty">No open positions.</div>';
   $('pend').innerHTML=s.pending.length?s.pending.map(o=>'<div class="row"><span><b>'+esc(o.ticker)+'</b> '+secName(o.mode)+'</span><span class="mono">buy ≤ '+fp(o.limit_price)+' · stop '+fp(o.stop)+'</span></div>').join(''):'<div class="empty">None waiting.</div>';
   const wl=s.watch||[],miss=new Set(s.watch_missing||[]);
   {const nb=$('newsBox'),ns=s.news||[];nb.innerHTML=ns.length?ns.map(n=>{const age=n.ts?Math.max(0,(Date.now()/1000-n.ts)/3600):null,a=age==null?'':(age<1?Math.round(age*60)+'m':age<48?Math.round(age)+'h':Math.round(age/24)+'d');
@@ -302,8 +302,8 @@ function renderPositions(s){
   tb.innerHTML=open.length<2?'':open.map(p=>'<button type="button" data-sel="'+p.id+'" aria-pressed="'+(S.sel===p.id)+'">'+esc(p.ticker)+'</button>').join('')+'<button type="button" data-sel="all" aria-pressed="'+(S.sel==='all')+'">All</button>';
   const el=$('positions');el.className='posgrid'+(big?' one':'');
   if(!open.length){el.innerHTML='<div class="card empty">No open positions yet. Charts appear here as soon as the bot buys something.</div>';mountCharts();return}
-  el.innerHTML=shown.map(p=>{const pc=p.price&&p.entry?(p.price/p.entry-1)*100:null;
-    return '<div class="card pos" data-pid="'+p.id+'"><div class="pos-top"><span class="tk">'+esc(p.ticker)+'<small>'+secName(p.mode)+(p.trimmed?' · half sold':'')+'</small></span><span class="pnl '+cls(p.unrealized)+'">'+sg(p.unrealized)+(pc==null?'':' '+(pc>0?'+':'')+pc.toFixed(1)+'%')+'</span></div>'+
+  el.innerHTML=shown.map(p=>{const pc=p.price&&p.entry?(p.price/p.entry-1)*100*(p.side==='short'?-1:1):null;
+    return '<div class="card pos" data-pid="'+p.id+'"><div class="pos-top"><span class="tk">'+esc(p.ticker)+'<small>'+sideTag(p)+secName(p.mode)+(p.trimmed?' · stop at entry':'')+'</small></span><span class="pnl '+cls(p.unrealized)+'">'+sg(p.unrealized)+(pc==null?'':' '+(pc>0?'+':'')+pc.toFixed(1)+'%')+'</span></div>'+
      '<div class="meta"><span>IN '+fp(p.entry)+'</span><span>NOW '+fp(p.price)+'</span><span>SL '+fp(p.stop)+'</span><span>T1 '+fp(p.t1)+'</span><span>T2 '+fp(p.t2)+'</span><span>'+usd(p.entry*p.qty_open)+'</span></div>'+
      '<div class="lwc" data-pid="'+p.id+'" data-tk="'+esc(p.ticker)+'" data-big="'+(big?1:0)+'" style="height:'+chartH(big)+'px"></div>'+
      '<div class="cbar"><span>'+esc(p.ticker)+'/USD · '+esc(S.tf)+' · Coinbase</span><span>BOUGHT / STOP / T1 / T2 marked</span></div>'+
@@ -376,8 +376,8 @@ function drawCurve(s){const LW=window.LightweightCharts,box=$('curveBox');
   curve.series.applyOptions({baseValue:{type:'price',price:s.start_balance}});curve.series.setData(pts);if(curve.n!==pts.length){curve.chart.timeScale().fitContent();curve.n=pts.length}}
 
 /* ---------- sections, benchmark, journal ---------- */
-const SEC={swing:'Short-term swings',scalp:'Quick scalps',meme:'Memes &amp; alts',hold:'Long-term holds'};
-const secName=m=>SEC[m]||esc(m);
+const SEC={swing:'Short-term swings',scalp:'Quick scalps',meme:'Memes &amp; alts',hold:'Long-term holds',ifvg:'Gold IFVG'};
+const secName=m=>SEC[m]||esc(m);const sideTag=p=>p.side==='short'?'SHORT ':'';
 function benchLine(s){const b=s.benchmark;if(!b||!b.start_equity)return '';const bot=b.bot/b.start_equity-1,btc=b.btc_hold/b.start_equity-1;
   return '<div class="dim" style="margin-top:4px;font-size:12px">since '+ago(b.since)+': bot <span class="'+cls(bot)+'">'+(bot>0?'+':'')+(bot*100).toFixed(2)+'%</span> · Bitcoin hold <span class="'+cls(btc)+'">'+(btc>0?'+':'')+(btc*100).toFixed(2)+'%</span></div>'}
 let bench=null;

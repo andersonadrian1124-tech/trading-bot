@@ -110,6 +110,7 @@ class Cfg:
                  "max_hold_hours": 48, "max_usd": 300.0},
         "hold": {"enabled": False, "risk_pct": 0.005, "stop": [0.15, 0.30], "min_rr": 2.0, "max_open": 3,
                  "max_hold_hours": 0, "alloc_pct": 0.40},
+        "ifvg": {"enabled": True, "max_open": 1},
     }
     max_chat_messages_per_day = 40   # dashboard chat box; each message is one Claude call
     # on-chain (DEX) coins: tracked by contract address through DexScreener, paper-traded in the "meme" section.
@@ -123,6 +124,21 @@ class Cfg:
     scan_dex_min_volume_usd = 100000  # 24h volume needed
     scan_dex_min_age_hours = 24.0     # skip brand-new pools (rug risk)
     dex_max_pct_of_liquidity = 0.02   # position can't exceed 2% of the pool
+    # ---- strategy switch: "ifvg" = gold Asia-session 15m IFVG (no Claude calls); "claude" = the old crypto analyst
+    strategy = "ifvg"
+    ifvg_symbol = "PAXG"            # tokenized gold on Coinbase (tracks spot gold, trades 24/7)
+    ifvg_session_start_et = 20      # Asia session 8pm ET ...
+    ifvg_session_hours = 6.0        # ... to 2am ET
+    ifvg_rr = 1.0                   # take profit at 1:1
+    ifvg_be_frac = 0.68             # move stop to entry once price is 68% of the way to TP
+    ifvg_risk_pct = 0.01            # risk per trade as a share of the balance
+    ifvg_max_leverage = 10.0        # paper position size cap, in multiples of the balance
+    ifvg_min_stop_atr = 0.5         # stop is never tighter than this many 15m ATRs
+    ifvg_max_stop_pct = 0.02        # skip setups whose stop is wider than this
+    ifvg_min_gap_atr = 0.1          # ignore fair value gaps smaller than this many ATRs
+    ifvg_fee_pct = 0.0002           # futures-like costs, per side (Coinbase spot would be much higher)
+    ifvg_slip_pct = 0.0001
+    ifvg_max_chase_r = 0.3          # skip if live price already moved this many R from the signal close
     review_days = 7.0              # how often Claude writes the performance review
     # remote settings: the bot re-reads this file from GitHub, so settings can be changed by chat
     settings_url = "https://raw.githubusercontent.com/andersonadrian1124-tech/trading-bot/main/paperbot/settings.json"
@@ -167,6 +183,7 @@ REMOTE_KEYS = {
     "fee_pct", "slippage_pct", "claude_minutes", "max_claude_calls_per_day", "pending_expiry_hours", "scan_universe",
     "scan_min_volume_usd", "scan_top_gainers", "scan_top_losers", "scan_top_volume", "scan_meme_picks", "scanned_risk_mult",
     "stablecoins", "model", "news_urls", "news_feeds", "news_max_age_hours", "reentry_cooldown_hours", "paused", "books", "review_days", "max_chat_messages_per_day",
+    "strategy", "ifvg_symbol", "ifvg_session_start_et", "ifvg_session_hours", "ifvg_rr", "ifvg_be_frac", "ifvg_risk_pct", "ifvg_max_leverage", "ifvg_min_stop_atr", "ifvg_max_stop_pct", "ifvg_min_gap_atr", "ifvg_fee_pct", "ifvg_slip_pct", "ifvg_max_chase_r",
     "dex_tokens", "ntfy_topic", "scan_dex", "scan_dex_picks", "scan_dex_min_volume_usd", "scan_dex_min_age_hours", "dex_fee_pct", "dex_slippage_pct", "dex_min_liquidity_usd", "dex_max_pct_of_liquidity",
 }
 _remote_state = {"last": 0.0, "sha": None}
@@ -283,6 +300,12 @@ def apply_remote(cfg, data):
             elif isinstance(cur, str):
                 if not isinstance(v, str) or not v:
                     raise ValueError("expected text")
+                if k == "strategy" and v not in ("ifvg", "claude"):
+                    raise ValueError('strategy must be "ifvg" or "claude"')
+                if k == "ifvg_symbol":
+                    v = v.strip().upper()
+                    if not re.fullmatch(r"[A-Z0-9]{2,12}", v):
+                        raise ValueError("bad symbol")
         except ValueError as e:
             log.warning("remote settings: skipped %s (%s)", k, e)
             continue
@@ -380,7 +403,7 @@ class DB:
         self.c = sqlite3.connect(path)
         self.c.row_factory = sqlite3.Row
         self.c.executescript(SCHEMA)
-        for col in ("max_price REAL", "min_price REAL"):      # older databases: add the new columns
+        for col in ("max_price REAL", "min_price REAL", "side TEXT DEFAULT 'long'", "be_at REAL"):      # older databases: add the new columns
             try:
                 self.c.execute("ALTER TABLE positions ADD COLUMN " + col)
             except sqlite3.OperationalError:
@@ -814,6 +837,92 @@ def atr(candles, n=14):
 # --------------------------------------------------------------------------
 # paper engine + risk rules
 # --------------------------------------------------------------------------
+def _short(p):
+    try:
+        return (p["side"] or "long") == "short"
+    except (KeyError, IndexError):
+        return False
+
+
+# --------------------------------------------------------------------------
+# gold strategy: first new 15-minute inverse fair value gap (IFVG) in the Asia session
+# --------------------------------------------------------------------------
+def session_window(now_utc, cfg):
+    """(start_ts, end_ts) of the Asia session containing now (US Eastern), or None. Skips Fri/Sat-evening sessions."""
+    n = now_utc.astimezone(ET)
+    start = n.replace(hour=cfg.ifvg_session_start_et, minute=0, second=0, microsecond=0)
+    if n < start:
+        start -= timedelta(days=1)
+    end = start + timedelta(hours=cfg.ifvg_session_hours)
+    if not (start <= n < end) or start.weekday() in (4, 5):
+        return None
+    return int(start.timestamp()), int(end.timestamp())
+
+
+def find_fvgs(cs, min_gap):
+    """Fair value gaps in closed candles: [{'dir','lo','hi','i'}]. A bullish gap is candle i-2 high below candle i low."""
+    out = []
+    for i in range(2, len(cs)):
+        a, c = cs[i - 2], cs[i]
+        if a["h"] < c["l"] and c["l"] - a["h"] >= min_gap:
+            out.append({"dir": "bull", "lo": a["h"], "hi": c["l"], "i": i})
+        elif a["l"] > c["h"] and a["l"] - c["h"] >= min_gap:
+            out.append({"dir": "bear", "lo": c["h"], "hi": a["l"], "i": i})
+    return out
+
+
+def first_ifvg(cs, session_start, min_gap):
+    """The earliest inversion that closes inside the session. A candle closing fully through a bullish gap makes a
+    bearish IFVG (short); closing fully through a bearish gap makes a bullish IFVG (long). Returns None or a dict
+    with side, index j, and the inverted zone."""
+    fvgs = find_fvgs(cs, min_gap)
+    best = None
+    for g in fvgs:
+        for j in range(g["i"] + 1, len(cs)):
+            if cs[j]["t"] < session_start:
+                continue
+            cl = cs[j]["c"]
+            if g["dir"] == "bull" and cl < g["lo"]:
+                side = "short"
+            elif g["dir"] == "bear" and cl > g["hi"]:
+                side = "long"
+            else:
+                continue
+            if best is None or j < best["j"]:
+                best = {"side": side, "j": j, "lo": g["lo"], "hi": g["hi"], "t": cs[j]["t"], "close": cl}
+            break
+    return best
+
+
+def ifvg_setup(cfg, cs, price, session_start):
+    """Turn the first IFVG into a trade plan, or (None, reason). cs = closed 15m candles, oldest first."""
+    a = atr(cs)
+    if not a:
+        return None, "not enough candles"
+    g = first_ifvg(cs, session_start, a * cfg.ifvg_min_gap_atr)
+    if not g:
+        return None, "no IFVG yet"
+    if g["j"] < len(cs) - 2:
+        return {"stale": True, "sig": g}, "first IFVG was already a while ago (bot missed it); skipping this session"
+    entry = g["close"]
+    if g["side"] == "long":
+        stop = min(g["lo"] - 0.05 * a, entry - cfg.ifvg_min_stop_atr * a)
+        risk = entry - stop
+    else:
+        stop = max(g["hi"] + 0.05 * a, entry + cfg.ifvg_min_stop_atr * a)
+        risk = stop - entry
+    if risk / entry > cfg.ifvg_max_stop_pct:
+        return {"skip": True, "sig": g}, f"stop would be {risk / entry:.2%}, wider than {cfg.ifvg_max_stop_pct:.1%}"
+    sgn = 1 if g["side"] == "long" else -1
+    if (price - entry) * sgn > cfg.ifvg_max_chase_r * risk:
+        return {"skip": True, "sig": g}, "price already ran away from the signal"
+    if (price - entry) * sgn < -risk * 0.8:
+        return {"skip": True, "sig": g}, "price already near the stop"
+    tp = entry + sgn * risk * cfg.ifvg_rr
+    be = entry + sgn * risk * cfg.ifvg_rr * cfg.ifvg_be_frac
+    return {"side": g["side"], "entry": entry, "stop": stop, "tp": tp, "be": be, "risk": risk, "sig": g, "atr": a}, "ok"
+
+
 class Engine:
     def __init__(self, cfg, db):
         self.cfg, self.db = cfg, db
@@ -841,7 +950,7 @@ class Engine:
         self.db.put("half", "1" if half else "0")
         mult = 0.5 if half else 1.0
         opn = self.open_positions()
-        open_risk = sum(max(0.0, (p["entry"] - p["stop"]) * p["qty_open"]) for p in opn)
+        open_risk = sum(max(0.0, (p["entry"] - p["stop"]) * p["qty_open"] * (-1 if _short(p) else 1)) for p in opn)
         scalp_losses = self.db.one(
             "SELECT COUNT(*) n FROM positions WHERE mode='scalp' AND status='closed' AND closed_at>=? AND realized<0",
             day_start_iso())["n"]
@@ -861,6 +970,8 @@ class Engine:
 
     def costs(self, t):
         c = self.cfg
+        if c.strategy == "ifvg" and t == c.ifvg_symbol:
+            return c.ifvg_fee_pct, c.ifvg_slip_pct
         return (c.dex_fee_pct, c.dex_slippage_pct) if t in c.dex_map() else (c.fee_pct, c.slippage_pct)
 
     # ---- the gatekeeper: every proposed trade passes through here
@@ -960,10 +1071,50 @@ class Engine:
                          f"SL {s['stop']:g} T1 {s['t1']:g}" + (f" T2 {s['t2']:g}" if s.get("t2") else ""))
         return pid, "ok"
 
+    def open_ifvg(self, plan, price):
+        """Open the paper trade for an IFVG plan (long or short). Returns (id, reason)."""
+        c = self.cfg
+        if os.path.exists(PAUSE_FILE) or c.paused:
+            return None, "paused"
+        bk = c.books.get("ifvg") or {}
+        if not bk.get("enabled", True):
+            return None, "ifvg section is off"
+        if self.db.one("SELECT 1 FROM positions WHERE mode='ifvg' AND status='open'"):
+            return None, "already in a gold trade"
+        short = plan["side"] == "short"
+        fee_pct, slip = c.ifvg_fee_pct, c.ifvg_slip_pct
+        fill = price * (1 - slip) if short else price * (1 + slip)
+        risk_px = abs(fill - plan["stop"])
+        if risk_px <= 0 or (plan["stop"] < fill) == short:
+            return None, "stop on the wrong side of price"
+        bal = self.risk_state()["balance"]
+        qty = (bal * c.ifvg_risk_pct) / risk_px
+        qty = min(qty, bal * c.ifvg_max_leverage / fill)
+        if qty * fill < 20:
+            return None, "position too small"
+        fee = qty * fill * fee_pct
+        sgn = -1 if short else 1
+        tp = fill + sgn * risk_px * c.ifvg_rr
+        be = fill + sgn * risk_px * c.ifvg_rr * c.ifvg_be_frac
+        thesis = (f"{'SHORT' if short else 'LONG'} {c.ifvg_symbol}: first 15m IFVG of the Asia session "
+                  f"(inverted gap {plan['sig']['lo']:.2f}-{plan['sig']['hi']:.2f}). 1:{c.ifvg_rr:g} RR, "
+                  f"stop to entry at {c.ifvg_be_frac:.0%} of the way.")
+        pid = self.db.x(
+            "INSERT INTO positions(ticker,mode,entry,qty,qty_open,stop,orig_stop,t1,t2,opened_at,realized,thesis,"
+            "max_price,min_price,side,be_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            c.ifvg_symbol, "ifvg", fill, qty, qty, plan["stop"], plan["stop"], tp, None, now_iso(), -fee,
+            thesis, fill, fill, "short" if short else "long", be)
+        s = {"ticker": c.ifvg_symbol, "mode": "ifvg"}
+        self._event("entry", s, fill, qty, -fee, thesis, pid)
+        notify(c, f"PAPER {'SELL' if short else 'BUY'} {c.ifvg_symbol} (IFVG) @ {fill:.2f} SL {plan['stop']:.2f} TP {tp:.2f}")
+        return pid, "ok"
+
     def _sell(self, p, price, qty, kind, note):
         fee_pct, slip = self.costs(p["ticker"])
-        fill = price * (1 - slip)
-        pnl = (fill - p["entry"]) * qty - fill * qty * fee_pct
+        short = _short(p)
+        fill = price * (1 + slip) if short else price * (1 - slip)
+        gross = (p["entry"] - fill) if short else (fill - p["entry"])
+        pnl = gross * qty - fill * qty * fee_pct
         self.db.x("UPDATE positions SET realized=realized+?, qty_open=qty_open-? WHERE id=?", pnl, qty, p["id"])
         self._event(kind, p, fill, qty, pnl, note, p["id"])
         return pnl
@@ -984,7 +1135,7 @@ class Engine:
         p = self.db.one("SELECT * FROM positions WHERE id=?", pid)
         cost = p["entry"] * p["qty"]
         ret = total / cost if cost else 0.0
-        risk = (p["entry"] - p["orig_stop"]) * p["qty"]
+        risk = abs(p["entry"] - p["orig_stop"]) * p["qty"]
         r = total / risk if risk > 0 else None
         try:
             hours = (datetime.fromisoformat(p["closed_at"]) - datetime.fromisoformat(p["opened_at"])).total_seconds() / 3600
@@ -993,6 +1144,8 @@ class Engine:
         mfe = (p["max_price"] / p["entry"] - 1) if p["max_price"] else 0.0
         mae = (p["min_price"] / p["entry"] - 1) if p["min_price"] else 0.0
         t1_move = (p["t1"] / p["entry"] - 1) if p["t1"] else 0.0
+        if _short(p):
+            mfe, mae, t1_move = -mae, -mfe, -t1_move
         if reason.startswith("stop") and total < 0:
             if t1_move and mfe >= 0.5 * t1_move:
                 lesson = f"Stopped out after getting {mfe / t1_move:.0%} of the way to T1: entry was reasonable but the stop or exit was too tight or too late."
@@ -1038,6 +1191,9 @@ class Engine:
             hi, lo = p["max_price"] or p["entry"], p["min_price"] or p["entry"]
             if price > hi or price < lo:
                 self.db.x("UPDATE positions SET max_price=?, min_price=? WHERE id=?", max(hi, price), min(lo, price), p["id"])
+            if p["mode"] == "ifvg":
+                self._tick_ifvg(p, price)
+                continue
             if price <= p["stop"]:
                 self.close_position(p, price, "stop at entry" if p["stop"] >= p["entry"] else "stop hit")
             elif p["t2"] and price >= p["t2"]:
@@ -1049,6 +1205,20 @@ class Engine:
                 notify(self.cfg, f"PAPER TRIM {p['ticker']} half at T1 {price:g}, stop moved to entry")
             elif self._timed_out(p):
                 self.close_position(p, price, "time stop")
+
+    def _tick_ifvg(self, p, price):
+        """Gold strategy exits: stop, 1:1 target, and stop to entry once price is 68% of the way to the target."""
+        short = _short(p)
+        stop_hit = price >= p["stop"] if short else price <= p["stop"]
+        tp_hit = price <= p["t1"] if short else price >= p["t1"]
+        if stop_hit:
+            self.close_position(p, price, "stop at entry (breakeven)" if p["trimmed"] else "stop hit")
+        elif tp_hit:
+            self.close_position(p, price, "T1 hit")
+        elif p["be_at"] and not p["trimmed"] and (price <= p["be_at"] if short else price >= p["be_at"]):
+            self.db.x("UPDATE positions SET stop=?, trimmed=1 WHERE id=?", p["entry"], p["id"])
+            self._event("note", p, price, 0, None, "68% to target: stop moved to entry", p["id"])
+            notify(self.cfg, f"PAPER {p['ticker']}: stop moved to breakeven")
 
     def _timed_out(self, p):
         bk = self.cfg.books.get(p["mode"]) or {}
@@ -1069,7 +1239,7 @@ class Engine:
         if time.time() - float(self.db.get("bench_last", 0)) < 300:
             return
         self.db.put("bench_last", time.time())
-        unreal = sum((prices.get(p["ticker"], {}).get("p", p["entry"]) - p["entry"]) * p["qty_open"]
+        unreal = sum((prices.get(p["ticker"], {}).get("p", p["entry"]) - p["entry"]) * p["qty_open"] * (-1 if _short(p) else 1)
                      for p in self.open_positions())
         eq = self.balance() + unreal
         if not self.db.get("bench_start"):
@@ -1094,8 +1264,8 @@ class Engine:
         rows = self.db.q("SELECT mode,entry,qty,orig_stop,realized FROM positions WHERE status='closed'")
         pnl = [r["realized"] for r in rows]
         wins, losses = [p for p in pnl if p > 0], [p for p in pnl if p <= 0]
-        rs = [r["realized"] / ((r["entry"] - r["orig_stop"]) * r["qty"]) for r in rows
-              if r["orig_stop"] and r["entry"] > r["orig_stop"] and r["qty"]]
+        rs = [r["realized"] / (abs(r["entry"] - r["orig_stop"]) * r["qty"]) for r in rows
+              if r["orig_stop"] and r["entry"] != r["orig_stop"] and r["qty"]]
         curve = self.curve()
         peak, dd = self.cfg.start_balance, 0.0
         for pt in curve:
@@ -1105,8 +1275,8 @@ class Engine:
         for m in self.cfg.books:
             mr = [r for r in rows if r["mode"] == m]
             mp = [r["realized"] for r in mr]
-            mrs = [r["realized"] / ((r["entry"] - r["orig_stop"]) * r["qty"]) for r in mr
-                   if r["orig_stop"] and r["entry"] > r["orig_stop"] and r["qty"]]
+            mrs = [r["realized"] / (abs(r["entry"] - r["orig_stop"]) * r["qty"]) for r in mr
+                   if r["orig_stop"] and r["entry"] != r["orig_stop"] and r["qty"]]
             by_mode[m] = {"n": len(mp), "total": sum(mp),
                           "win_rate": (sum(1 for p in mp if p > 0) / len(mp)) if mp else None,
                           "avg_r": (sum(mrs) / len(mrs)) if mrs else None}
@@ -1133,10 +1303,11 @@ class Engine:
         positions, unreal = [], 0.0
         for p in self.open_positions():
             px = prices.get(p["ticker"], {}).get("p")
-            u = (px - p["entry"]) * p["qty_open"] if px else None
+            u = (px - p["entry"]) * p["qty_open"] * (-1 if _short(p) else 1) if px else None
             unreal += u or 0
             positions.append({k: p[k] for k in ("id", "ticker", "mode", "entry", "qty_open", "stop", "t1", "t2",
-                                                 "trimmed", "opened_at", "thesis")} | {"price": px, "unrealized": u})
+                                                 "trimmed", "opened_at", "thesis")} | {"price": px, "unrealized": u,
+                                                 "side": p["side"] or "long"})
         pend = [dict(r) for r in self.db.q("SELECT * FROM pending WHERE status='waiting'")]
         last = self.db.one("SELECT ts,payload FROM decisions ORDER BY id DESC LIMIT 1")
         events = [dict(r) for r in self.db.q(
@@ -1886,8 +2057,39 @@ def write_state(cfg, eng, prices):
 
 
 def needed(cfg, eng):
-    return sorted(set(cfg.core()) | {"BTC"} | {p["ticker"] for p in eng.open_positions()}
+    return sorted(set(cfg.core()) | {"BTC"} | ({cfg.ifvg_symbol} if cfg.strategy == "ifvg" else set()) | {p["ticker"] for p in eng.open_positions()}
                   | {r["ticker"] for r in eng.db.q("SELECT ticker FROM pending WHERE status='waiting'")})
+
+
+def gold_cycle(cfg, db, eng, prices):
+    """Called every ~minute. Inside the Asia session, looks at closed 15m candles for the first new IFVG, once per session."""
+    now = datetime.now(timezone.utc)
+    win = session_window(now, cfg)
+    if not win:
+        return
+    sess_key = f"ifvg_session:{win[0]}"
+    if db.get(sess_key):
+        return
+    px = (prices.get(cfg.ifvg_symbol) or {}).get("p")
+    if not px:
+        return
+    cs = [c for c in fetch_candles(cfg.ifvg_symbol, "15m", 90) if c["t"] + 900 <= now.timestamp()]
+    if len(cs) < 20:
+        return
+    plan, why = ifvg_setup(cfg, cs, px, win[0])
+    if plan is None:
+        return          # nothing yet: keep looking until the session ends
+    db.put(sess_key, "done")           # the first IFVG decides the session, taken or not
+    if plan.get("stale") or plan.get("skip"):
+        db.x("INSERT INTO decisions(ts,payload) VALUES(?,?)", now_iso(),
+             json.dumps({"summary": f"IFVG {plan['sig']['side']} seen but skipped: {why}", "results": []}))
+        log.info("IFVG skipped: %s", why)
+        return
+    pid, res = eng.open_ifvg(plan, px)
+    db.x("INSERT INTO decisions(ts,payload) VALUES(?,?)", now_iso(),
+         json.dumps({"summary": f"First IFVG: {plan['side']} {cfg.ifvg_symbol} @ {plan['entry']:.2f}",
+                     "results": [f"opened #{pid}" if pid else f"rejected: {res}"]}))
+    log.info("IFVG %s: %s", plan["side"], f"opened #{pid}" if pid else res)
 
 
 def run(cfg, once=False):
@@ -1918,7 +2120,14 @@ def run(cfg, once=False):
             eng.tick(prices)
             eng.sample_bench(prices)
             fails, alerted = 0, False
-            if once or time.time() - last_claude >= cfg.claude_minutes * 60:
+            if cfg.strategy == "ifvg":
+                if once or time.time() - last_claude >= 30:
+                    last_claude = time.time()
+                    try:
+                        gold_cycle(cfg, db, eng, prices)
+                    except Exception:
+                        log.exception("gold cycle failed")
+            elif once or time.time() - last_claude >= cfg.claude_minutes * 60:
                 last_claude = time.time()
                 try:
                     brain.cycle(prices)

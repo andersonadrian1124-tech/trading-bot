@@ -1,24 +1,12 @@
 {
-  "_note": "Live settings for the paper bot. Claude edits this file when you ask in chat; the bot re-reads it every minute or so.",
+  "_note": "Gold IFVG strategy: PAXG, Asia session 8pm-2am ET, first new 15m IFVG, 1:1 RR, stop to entry at 68%.",
   "paused": false,
   "watchlist": [
-    "BTC",
-    "ETH",
-    "SOL",
-    "XRP",
-    "HYPE",
-    "LINK",
-    "NEAR",
-    "INDEX",
-    "UP",
-    "ZEC",
-    "ONDO",
-    "ZRO",
-    "PUMP"
+    "PAXG"
   ],
   "claude_minutes": 60,
-  "max_claude_calls_per_day": 26,
-  "scan_universe": true,
+  "max_claude_calls_per_day": 0,
+  "scan_universe": false,
   "scan_min_volume_usd": 1000000,
   "scalp_loss_cap": 5,
   "max_open_positions": 14,
@@ -70,38 +58,12 @@
     "FARTCOIN",
     "PUMP"
   ],
-  "dex_tokens": [
-    {
-      "ticker": "MOO",
-      "address": "0xd9db30bb0d2b8d2eae3826a1372117e058791e18",
-      "note": "Memory cow Moo, Robinhood Chain"
-    },
-    {
-      "ticker": "BP",
-      "address": "BPxxfRCXkUVhig4HS1Lh7kZqV6SPJhzfEk4x6fVBjPCy",
-      "note": "Backpack, Solana"
-    },
-    {
-      "ticker": "AI",
-      "address": "0x2E8c31162b855A2ffa90F6F8634643Ad6F111e18",
-      "note": "Artificial Inu, Robinhood Chain"
-    },
-    {
-      "ticker": "LIT",
-      "address": "0x232CE3bd40fCd6f80f3d55A522d03f25Df784Ee2",
-      "note": "Lighter, Ethereum"
-    },
-    {
-      "ticker": "ORBIO",
-      "address": "0xAa07A0e9209e16aC99708C3EC70159c6eF3128A3",
-      "note": "Orbio.so, Robinhood Chain"
-    }
-  ],
+  "dex_tokens": [],
   "ntfy_topic": "adrian-paperbot-9657c872",
   "scan_top_gainers": 3,
   "scan_top_losers": 2,
   "scan_top_volume": 3,
-  "scan_dex": true,
+  "scan_dex": false,
   "scan_dex_picks": 3,
   "news_feeds": [
     "https://www.coindesk.com/arc/outboundfeeds/rss/",
@@ -110,5 +72,7 @@
     "https://www.theblock.co/rss.xml"
   ],
   "scan_meme_picks": 2,
-  "max_chat_messages_per_day": 15
+  "max_chat_messages_per_day": 15,
+  "strategy": "ifvg",
+  "ifvg_symbol": "PAXG"
 }
